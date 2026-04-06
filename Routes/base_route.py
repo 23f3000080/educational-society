@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from models import *
 from flask_security.utils import hash_password, verify_password
 import uuid, random, string
+import secrets
 import pytz
 from datetime import datetime, timedelta
 from communication.email_sender import send_reset_code_email, send_email_verification_otp
@@ -439,12 +440,14 @@ def google_signup():
         if existing_user:
             return jsonify({"error": "User with this email already exists. Please login instead."}), 409
         
-        # Create new user with Google ID as password (never used, but required field)
+        # Create new user with random placeholder password.
+        # User can set their own password using /api/auth/google-set-password.
+        placeholder_password = secrets.token_urlsafe(32)
         user = User(
             email=google_email,
             first_name=first_name,
             last_name=last_name,
-            password=hash_password(google_id + "google_oauth"),  # Hash Google ID for security
+            password=hash_password(placeholder_password),
             user_id=generate_unique_user_id(),
             is_email_verified=True,  # Google email is verified by Google
             fs_uniquifier=str(uuid.uuid4()),
@@ -476,6 +479,7 @@ def google_signup():
         return jsonify({
             "success": True,
             "message": "Google signup successful! Account created.",
+            "set_password_required": True,
             "user": user_data,
             "token": token
         }), 201
@@ -485,6 +489,58 @@ def google_signup():
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": f"Signup failed: {str(e)}"}), 500
+
+
+@base_bp.route('/api/auth/google-set-password', methods=['POST'])
+def google_set_password():
+    """Allow users authenticated by Google token to set a local password."""
+    from google.auth.transport import requests as google_requests
+    from google.oauth2 import id_token
+
+    data = request.get_json(silent=True) or {}
+    google_token = data.get("token")
+    new_password = (data.get("new_password") or "").strip()
+    confirm_password = (data.get("confirm_password") or "").strip()
+
+    if not google_token:
+        return jsonify({"error": "Google token is required"}), 400
+
+    if not new_password or not confirm_password:
+        return jsonify({"error": "new_password and confirm_password are required"}), 400
+
+    if len(new_password) < 6:
+        return jsonify({"error": "Password must be at least 6 characters long"}), 400
+
+    if new_password != confirm_password:
+        return jsonify({"error": "Passwords do not match"}), 400
+
+    try:
+        idinfo = id_token.verify_oauth2_token(
+            google_token,
+            google_requests.Request()
+        )
+
+        google_email = idinfo.get("email")
+        if not google_email:
+            return jsonify({"error": "Unable to get email from Google"}), 400
+
+        user = User.query.filter_by(email=google_email).first()
+        if not user:
+            return jsonify({"error": "User not found. Please sign up first."}), 404
+
+        if not user.active:
+            return jsonify({"error": "You are suspended! Please contact Admin."}), 403
+
+        user.password = hash_password(new_password)
+        db.session.commit()
+
+        return jsonify({"message": "Password set successfully"}), 200
+
+    except ValueError as e:
+        return jsonify({"error": f"Invalid Google token: {str(e)}"}), 401
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": f"Failed to set password: {str(e)}"}), 500
 
 
 # API for forgot password

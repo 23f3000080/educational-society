@@ -2,14 +2,17 @@ from flask import current_app
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
 
 def send_plain_email(to_email, subject, body):
-    EMAIL_HOST_USER = current_app.config.get("EMAIL_HOST_USER")
-    EMAIL_HOST_PASSWORD = current_app.config.get("EMAIL_HOST_PASSWORD")
+    EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
+    EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
 
     if not EMAIL_HOST_USER or not EMAIL_HOST_PASSWORD:
-        raise Exception("Email credentials are not set in Flask config")
+        raise Exception("Email credentials are not set in environment variables")
 
     msg = MIMEMultipart()
     msg["From"] = EMAIL_HOST_USER
