@@ -9,6 +9,7 @@ from communication.email_sender import send_reset_code_email, send_email_verific
 import jwt
 from functools import wraps
 from flask import current_app
+from sqlalchemy.exc import OperationalError
 
 base_bp = Blueprint("base", __name__)
 IST = pytz.timezone("Asia/Kolkata")
@@ -546,34 +547,39 @@ def google_set_password():
 # API for forgot password
 @base_bp.route('/api/auth/forgot-password', methods=['POST'])
 def forgot_password():
-    data = request.get_json(silent=True)
+    try:
+        data = request.get_json(silent=True)
 
-    if not data:
-        return jsonify({"error": "Invalid JSON"}), 400
+        if not data:
+            return jsonify({"error": "Invalid JSON"}), 400
 
-    email = data.get("email")
+        email = data.get("email")
 
-    if not email:
-        return jsonify({"error": "Email is required"}), 400
+        if not email:
+            return jsonify({"error": "Email is required"}), 400
 
-    user = User.query.filter_by(email=email).first()
-    if not user:
-        return jsonify({"error": "Email not found"}), 404
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            return jsonify({"error": "Email not found"}), 404
 
-    reset_code = ''.join(random.choices(string.digits, k=6))
-    expiry_time = datetime.now() + timedelta(minutes=10)
+        reset_code = ''.join(random.choices(string.digits, k=6))
+        expiry_time = datetime.now() + timedelta(minutes=10)
 
-    user.reset_code = reset_code
-    user.reset_code_expiry = expiry_time
-    db.session.commit()
+        user.reset_code = reset_code
+        user.reset_code_expiry = expiry_time
+        db.session.commit()
 
-    print(f"Reset code for {user.email}: {reset_code}")  # For debugging purposes
-    # send email here
-    send_reset_code_email(user.email, reset_code)
+        print(f"Reset code for {user.email}: {reset_code}")  # For debugging purposes
+        # send email here
+        send_reset_code_email(user.email, reset_code)
 
-    return jsonify({
-        "message": "Reset code sent to email"
-    }), 200
+        return jsonify({
+            "message": "Reset code sent to email"
+        }), 200
+    except OperationalError as e:
+        db.session.rollback()
+        current_app.logger.exception("Database connection failed during forgot password")
+        return jsonify({"error": "Database connection temporarily failed. Please try again."}), 503
 
 
 @base_bp.route('/api/auth/verify-reset-code', methods=['POST'])
