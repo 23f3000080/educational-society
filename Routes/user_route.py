@@ -1141,3 +1141,36 @@ def get_full_course_data(current_user, course_id):
         },
         "completed_items": completed_list
     }), 200
+
+# api to fetch user purchased course list and their details
+@user_bp.route("/api/my-courses/details", methods=["GET"])
+@token_required
+@roles_required("user")
+def fetch_my_courses_details(current_user):
+
+    enrollments = Enrollment.query.filter_by(student_id=current_user.id, payment_status="paid").all()
+    course_ids = [enrollment.course_id for enrollment in enrollments]
+    enrollment_map = {enrollment.course_id: enrollment for enrollment in enrollments}
+
+    courses = Course.query.filter(Course.id.in_(course_ids)).all()
+
+    result = []
+    for course in courses:
+        enrollment = enrollment_map.get(course.id)
+        result.append({
+            "id": course.id,
+            "title": course.title,
+            "subject": course.subject,
+            "duration_months": course.duration_months,
+            "class_level": course.class_level,
+            "course_code": course.course_code,
+            "fee": float(course.fee),
+            "description": course.description,
+            "start_date": course.start_date.isoformat() if course.start_date else None,
+            "end_date": course.end_date.isoformat() if course.end_date else None,
+            "enrollment_date": enrollment.enrollment_date.isoformat() if enrollment and enrollment.enrollment_date else None,
+            "is_active": course.is_active,
+            "picture_url": course.picture if course.picture else None
+        })
+
+    return jsonify(result), 200
