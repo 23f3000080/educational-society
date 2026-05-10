@@ -20,9 +20,21 @@ def send_plain_email(to_email, subject, body):
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain"))
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(EMAIL_HOST_USER, EMAIL_HOST_PASSWORD)
-        smtp.send_message(msg)
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+
+            smtp.login(EMAIL_HOST_USER, EMAIL_HOST_PASSWORD)
+
+            smtp.send_message(msg)
+
+            print("Email sent successfully")
+
+    except Exception as e:
+        print("EMAIL ERROR:", str(e))
+        raise e
 
 
 def send_reset_code_email(to_email, reset_code):
