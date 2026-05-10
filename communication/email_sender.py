@@ -4,23 +4,25 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
 from dotenv import load_dotenv
-import resend
 
 load_dotenv()
 
-resend.api_key = os.getenv("RESEND_API_KEY")
 def send_plain_email(to_email, subject, body):
+    EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
+    EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
 
-    params = {
-        "from": "Educational Society <onboarding@resend.dev>",
-        "to": [to_email],
-        "subject": subject,
-        "text": body,
-    }
+    if not EMAIL_HOST_USER or not EMAIL_HOST_PASSWORD:
+        raise Exception("Email credentials are not set in environment variables")
 
-    email = resend.Emails.send(params)
+    msg = MIMEMultipart()
+    msg["From"] = EMAIL_HOST_USER
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
 
-    print(email)
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(EMAIL_HOST_USER, EMAIL_HOST_PASSWORD)
+        smtp.send_message(msg)
 
 
 def send_reset_code_email(to_email, reset_code):
