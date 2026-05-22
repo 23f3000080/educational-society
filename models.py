@@ -637,6 +637,37 @@ class CourseProgress(db.Model):
     student = db.relationship("User", backref="course_progress")
     course = db.relationship("Course", backref="course_progress")
 
+# live class model
+class LiveClass(db.Model):
+    __tablename__ = "live_classes"
+
+    id = db.Column(db.Integer, primary_key=True)
+    course_id = db.Column(db.Integer, db.ForeignKey("courses.id", ondelete="CASCADE"))
+    title = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text)
+
+    start_time = db.Column(db.DateTime(timezone=True), nullable=False)
+    end_time = db.Column(db.DateTime(timezone=True), nullable=False)
+
+    meeting_link = db.Column(db.String(500))
+    instructor_name = db.Column(db.String(100))
+    status = db.Column(db.String(30), default="Scheduled") # Scheduled | Live | Completed | Cancelled
+
+    message = db.Column(db.Text)
+
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc)
+    )
+
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+    course = db.relationship("Course", backref=db.backref("live_classes", lazy=True, cascade="all, delete-orphan"))
+
 # subscribe models
 class Subscriber(db.Model):
     __tablename__ = "subscribers"
