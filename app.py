@@ -1,6 +1,3 @@
-import eventlet
-eventlet.monkey_patch()
-
 from dotenv import load_dotenv
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
@@ -22,7 +19,6 @@ from Routes.admin_test_routes import admin_test_bp
 from Routes.student_test_routes import student_test_bp
 from Routes.chatbot_routes import chatbot_bp
 from Routes.admin_live_classManagement import admin_live_class_management_bp
-from live_socket.signaling import socketio
 from config import LocalDevelopmentConfig
 from models import db, User, Role
 
@@ -40,8 +36,6 @@ def create_app():
 
     db.init_app(app)
     migrate = Migrate(app, db)
-    socketio.init_app(app, cors_allowed_origins="*")
-    app.socketio = socketio
 
     # Setup Flask-Security-Too
     Security(app, user_datastore)
@@ -116,4 +110,4 @@ def setup_default_users(user_datastore):
 
 if __name__ == "__main__":
     app = create_app()
-    app.socketio.run(app, debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=True, host="0.0.0.0", port=5000)

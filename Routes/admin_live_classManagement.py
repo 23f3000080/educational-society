@@ -5,7 +5,6 @@ from zoneinfo import ZoneInfo
 from models import *
 
 from Routes.base_route import token_required, roles_required
-from live_socket.rooms import get_room_snapshot
 
 
 admin_live_class_management_bp = Blueprint(
@@ -23,7 +22,6 @@ def _room_id_for(live_class_id):
 
 def _serialize_live_class(live_class):
     course = live_class.course or Course.query.get(live_class.course_id)
-    room_snapshot = get_room_snapshot(live_class.id)
 
     return {
         'id': live_class.id,
@@ -38,7 +36,7 @@ def _serialize_live_class(live_class):
         'instructor_name': live_class.instructor_name,
         'status': live_class.status,
         'message': live_class.message,
-        'participant_count': room_snapshot['participant_count'],
+        'participant_count': 0,
         'created_at': live_class.created_at.isoformat() if live_class.created_at else None,
         'updated_at': live_class.updated_at.isoformat() if live_class.updated_at else None,
     }
@@ -386,7 +384,7 @@ def get_live_class_access(current_user, live_class_id):
             'live_class': _serialize_live_class(live_class),
             'room': {
                 'room_id': _room_id_for(live_class.id),
-                'participant_count': get_room_snapshot(live_class.id)['participant_count']
+                'participant_count': 0
             }
         }), 200
     except Exception as e:

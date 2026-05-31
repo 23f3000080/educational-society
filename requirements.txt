@@ -15,13 +15,11 @@ Flask-Login==0.6.3
 Flask-Migrate==4.1.0
 Flask-Principal==0.4.0
 Flask-Security==5.6.2
-Flask-SocketIO==5.5.1
 Flask-SQLAlchemy==3.1.1
 Flask-WTF==1.2.2
 google-auth==2.49.1
 greenlet==3.2.4
 gunicorn==25.3.0
-eventlet==0.40.3
 idna==3.10
 importlib_resources==6.5.2
 itsdangerous==2.2.0
