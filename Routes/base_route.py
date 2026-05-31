@@ -649,11 +649,6 @@ def contact_us():
     if not all([name, email, issue_type, message]):
         return jsonify({"error": "All fields required"}), 400
 
-    allowed_issue_types = {"admission", "fees", "technical", "course", "other"}
-    issue_type_normalized = str(issue_type).strip().lower()
-    if issue_type_normalized not in allowed_issue_types:
-        return jsonify({"error": "Invalid issue type"}), 400
-
     name = str(name).strip()
     email = str(email).strip().lower()
     message = str(message).strip()
@@ -664,7 +659,7 @@ def contact_us():
     new_message = QueryModel(
         person_name=name,
         email=email,
-        issue_type=issue_type_normalized,
+        issue_type=issue_type,
         query_text=message,
         raised_at=datetime.now(timezone.utc)
     )
