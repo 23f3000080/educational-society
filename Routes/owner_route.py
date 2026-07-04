@@ -2,7 +2,8 @@ from models import *
 from flask import Blueprint, request, jsonify, current_app
 from Routes.base_route import token_required, roles_required
 from datetime import datetime, timezone
-from communication.email_sender import send_query_resolution_email
+from threading import Thread
+from communication.email_sender import send_query_resolution_email, send_notification_email, send_plain_email
 
 owner_bp = Blueprint("owner", __name__)
 
@@ -30,6 +31,186 @@ def save_course_picture(file):
 
     file.save(filepath)
     return unique_name
+
+
+def _build_notification_recipients(scope, user_id=None, user_ids=None):
+    query = User.query.filter(User.active.is_(True))
+
+    if scope == "single" and user_id:
+        query = query.filter(User.id == user_id)
+    elif scope == "multiple" and user_ids:
+        query = query.filter(User.id.in_(user_ids))
+
+    recipients = []
+    seen_emails = set()
+
+    for user in query.with_entities(User.email, User.first_name, User.last_name).all():
+        email = (user.email or "").strip()
+        if not email or email in seen_emails:
+            continue
+
+        seen_emails.add(email)
+        full_name = " ".join(
+            [part for part in [user.first_name, user.last_name] if part]
+        ).strip()
+        recipients.append({
+            "email": email,
+            "name": full_name or "Student"
+        })
+
+    return recipients
+
+
+def _send_notification_emails_async(app, scope, title, message, notif_type="info", user_id=None, user_ids=None):
+    try:
+        with app.app_context():
+            recipients = _build_notification_recipients(scope, user_id=user_id, user_ids=user_ids)
+
+            if not recipients:
+                app.logger.info(
+                    "No recipients found for notification email dispatch (scope=%s, title=%s)",
+                    scope,
+                    title,
+                )
+                return
+
+            for recipient in recipients:
+                try:
+                    send_notification_email(
+                        to_email=recipient["email"],
+                        recipient_name=recipient["name"],
+                        title=title,
+                        message=message,
+                        notification_type=notif_type,
+                    )
+                except Exception as email_error:
+                    app.logger.warning(
+                        "Notification email failed for %s: %s",
+                        recipient["email"],
+                        email_error,
+                    )
+    except Exception as error:
+        app.logger.warning("Notification email dispatch failed: %s", error)
+    finally:
+        with app.app_context():
+            db.session.remove()
+
+
+def _queue_notification_email_dispatch(scope, title, message, notif_type="info", user_id=None, user_ids=None):
+    app = current_app._get_current_object()
+    worker = Thread(
+        target=_send_notification_emails_async,
+        args=(app, scope, title, message, notif_type, user_id, user_ids),
+        daemon=True,
+    )
+    worker.start()
+
+
+def _serialize_subscriber(subscriber):
+    return {
+        "id": subscriber.id,
+        "email": subscriber.email,
+        "name": subscriber.name,
+        "message": subscriber.message,
+        "subscribed_at": subscriber.subscribed_at.isoformat() if subscriber.subscribed_at else None,
+    }
+
+
+def _serialize_management_user(user):
+    full_name = " ".join(
+        [part for part in [user.first_name, user.last_name] if part]
+    ).strip()
+
+    return {
+        "id": user.id,
+        "user_id": user.user_id,
+        "full_name": full_name,
+        "email": user.email,
+        "mobile_no": user.mobile_no,
+        "active": bool(user.active),
+        "roles": [role.name for role in user.roles],
+        "joining_date": user.joining_date.isoformat() if user.joining_date else None,
+    }
+
+
+def _dedupe_recipients(recipients):
+    deduped = []
+    seen_emails = set()
+
+    for recipient in recipients:
+        email = (recipient.get("email") or "").strip().lower()
+        if not email or email in seen_emails:
+            continue
+
+        seen_emails.add(email)
+        deduped.append({
+            "email": email,
+            "name": (recipient.get("name") or "Student").strip() or "Student",
+        })
+
+    return deduped
+
+
+def _build_management_email_recipients(audience, user_ids=None):
+    user_ids = user_ids or []
+    recipients = []
+
+    if audience in {"subscribers", "everyone"}:
+        for subscriber in Subscriber.query.order_by(Subscriber.subscribed_at.desc()).all():
+            recipients.append({
+                "email": subscriber.email,
+                "name": subscriber.name or "Subscriber",
+            })
+
+    if audience in {"all_users", "everyone"}:
+        users = User.query.filter(User.active.is_(True), User.email.isnot(None)).all()
+        for user in users:
+            full_name = " ".join(
+                [part for part in [user.first_name, user.last_name] if part]
+            ).strip()
+            recipients.append({
+                "email": user.email,
+                "name": full_name or "Student",
+            })
+
+    if audience == "specific_users":
+        users = User.query.filter(
+            User.active.is_(True),
+            User.email.isnot(None),
+            User.id.in_(user_ids),
+        ).all()
+        for user in users:
+            full_name = " ".join(
+                [part for part in [user.first_name, user.last_name] if part]
+            ).strip()
+            recipients.append({
+                "email": user.email,
+                "name": full_name or "Student",
+            })
+
+    return _dedupe_recipients(recipients)
+
+
+def _send_management_email_async(app, audience, subject, body, user_ids=None):
+    try:
+        with app.app_context():
+            recipients = _build_management_email_recipients(audience, user_ids=user_ids)
+
+            for recipient in recipients:
+                try:
+                    personalized_body = body.replace("{{name}}", recipient["name"])
+                    send_plain_email(recipient["email"], subject, personalized_body)
+                except Exception as email_error:
+                    app.logger.warning(
+                        "Management email failed for %s: %s",
+                        recipient["email"],
+                        email_error,
+                    )
+    except Exception as error:
+        app.logger.warning("Management email dispatch failed: %s", error)
+    finally:
+        with app.app_context():
+            db.session.remove()
 
 #  ---------------------------------------------------------------
 
@@ -59,6 +240,7 @@ def create_global_notification_route(current_user):
         return jsonify({"error": "Title and message are required"}), 400
 
     create_global_notification(title, message, type)
+    _queue_notification_email_dispatch("global", title, message, type)
 
     return jsonify({
         "success": True,
@@ -99,6 +281,7 @@ def create_user_notification_route(current_user):
         return jsonify({"error": "user_id, title, message required"}), 400
 
     create_user_notification(user_id, title, message, type)
+    _queue_notification_email_dispatch("single", title, message, type, user_id=user_id)
 
     return jsonify({
         "success": True,
@@ -145,6 +328,7 @@ def create_multi_user_notification_route(current_user):
         return jsonify({"error": "title and message required"}), 400
 
     create_multi_user_notification(user_ids, title, message)
+    _queue_notification_email_dispatch("multiple", title, message, "info", user_ids=user_ids)
 
     return jsonify({
         "success": True,
@@ -372,11 +556,124 @@ def admin_create_notification(current_user):
 
     db.session.commit()
 
+    if scope == 'global':
+        _queue_notification_email_dispatch('global', title, message, notif_type)
+    elif scope == 'single':
+        _queue_notification_email_dispatch('single', title, message, notif_type, user_id=user_id)
+    elif scope == 'multiple':
+        _queue_notification_email_dispatch('multiple', title, message, notif_type, user_ids=user_ids)
+
     return jsonify({
         "success": True,
         "message": "Notification created successfully",
         "notification_id": notification.id
     }), 201
+
+
+@owner_bp.route("/api/admin/subscribers", methods=["GET"])
+@token_required
+@roles_required("admin")
+def admin_list_subscribers(current_user):
+    """List newsletter subscribers for admin management."""
+    page = request.args.get("page", 1, type=int)
+    per_page = min(request.args.get("per_page", 20, type=int), 100)
+    search = request.args.get("search", "", type=str).strip()
+
+    query = Subscriber.query
+
+    if search:
+        query = query.filter(
+            db.or_(
+                Subscriber.email.ilike(f"%{search}%"),
+                Subscriber.name.ilike(f"%{search}%"),
+            )
+        )
+
+    paginated = query.order_by(
+        Subscriber.subscribed_at.desc().nullslast(),
+        Subscriber.id.desc(),
+    ).paginate(page=page, per_page=per_page, error_out=False)
+
+    return jsonify({
+        "subscribers": [_serialize_subscriber(item) for item in paginated.items],
+        "pagination": {
+            "total": paginated.total,
+            "pages": paginated.pages,
+            "current_page": page,
+            "per_page": per_page,
+            "has_next": paginated.has_next,
+            "has_prev": paginated.has_prev,
+        },
+        "summary": {
+            "total_subscribers": Subscriber.query.count(),
+        }
+    }), 200
+
+
+@owner_bp.route("/api/admin/management/recipients", methods=["GET"])
+@token_required
+@roles_required("admin")
+def admin_management_recipients(current_user):
+    """Compact recipient data for the management email composer."""
+    users = User.query.filter(User.active.is_(True)).order_by(User.joining_date.desc().nullslast()).all()
+    subscribers = Subscriber.query.order_by(Subscriber.subscribed_at.desc().nullslast()).all()
+
+    return jsonify({
+        "users": [_serialize_management_user(user) for user in users],
+        "subscribers": [_serialize_subscriber(subscriber) for subscriber in subscribers],
+        "summary": {
+            "total_users": len(users),
+            "total_subscribers": len(subscribers),
+            "total_active_user_emails": len([user for user in users if user.email]),
+        }
+    }), 200
+
+
+@owner_bp.route("/api/admin/management/send-email", methods=["POST"])
+@token_required
+@roles_required("admin")
+def admin_send_management_email(current_user):
+    """Send plain emails to subscribers, users, selected users, or everyone."""
+    data = request.get_json(silent=True) or {}
+
+    audience = (data.get("audience") or "").strip().lower()
+    subject = (data.get("subject") or "").strip()
+    body = (data.get("body") or "").strip()
+    user_ids = data.get("user_ids") or []
+
+    allowed_audiences = {"subscribers", "all_users", "specific_users", "everyone"}
+    if audience not in allowed_audiences:
+        return jsonify({"error": "audience must be subscribers, all_users, specific_users, or everyone"}), 400
+
+    if not subject or not body:
+        return jsonify({"error": "subject and body are required"}), 400
+
+    if audience == "specific_users":
+        if not isinstance(user_ids, list) or not user_ids:
+            return jsonify({"error": "user_ids list is required for specific_users audience"}), 400
+
+        try:
+            user_ids = [int(user_id) for user_id in user_ids]
+        except (TypeError, ValueError):
+            return jsonify({"error": "user_ids must contain valid user ids"}), 400
+
+    recipients = _build_management_email_recipients(audience, user_ids=user_ids)
+    if not recipients:
+        return jsonify({"error": "No recipients found for this audience"}), 400
+
+    app = current_app._get_current_object()
+    worker = Thread(
+        target=_send_management_email_async,
+        args=(app, audience, subject, body, user_ids),
+        daemon=True,
+    )
+    worker.start()
+
+    return jsonify({
+        "success": True,
+        "message": "Email dispatch started",
+        "recipient_count": len(recipients),
+    }), 202
 
 
 # api to create course
@@ -520,3 +817,214 @@ def get_all_courses_route(current_user):
         })
 
     return jsonify(result), 200
+
+# admin get all subscribers
+@owner_bp.route("/api/admin/subscribers", methods=["GET"])
+@token_required
+@roles_required("admin")
+def admin_get_subscribers(current_user):
+    subscribers = Subscriber.query.all()
+    result = []
+
+    for sub in subscribers:
+        result.append({
+            "id": sub.id,
+            "email": sub.email,
+            "name": sub.name,
+            "message": sub.message,
+            "subscribed_at": sub.subscribed_at.isoformat() if sub.subscribed_at else None
+        })
+
+    return jsonify(result), 200
+
+# api to delete subscriber
+@owner_bp.route("/api/admin/subscribers/<int:subscriber_id>", methods=["DELETE"])
+@token_required
+@roles_required("admin")
+def admin_delete_subscriber(current_user, subscriber_id):
+    subscriber = Subscriber.query.get(subscriber_id)
+    if not subscriber:
+        return jsonify({"error": "Subscriber not found"}), 404
+
+    db.session.delete(subscriber)
+    db.session.commit()
+
+    return jsonify({
+        "success": True,
+        "message": "Subscriber deleted successfully"
+    }), 200
+    
+# api to edit subscriber
+@owner_bp.route("/api/admin/subscribers/<int:subscriber_id>", methods=["PUT"])
+@token_required
+@roles_required("admin")
+def admin_edit_subscriber(current_user, subscriber_id):
+    subscriber = Subscriber.query.get(subscriber_id)
+    if not subscriber:
+        return jsonify({"error": "Subscriber not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+
+    subscriber.email = data.get("email", subscriber.email)
+    subscriber.name = data.get("name", subscriber.name)
+    subscriber.message = data.get("message", subscriber.message)
+
+    db.session.commit()
+
+    return jsonify({
+        "success": True,
+        "message": "Subscriber updated successfully"
+    }), 200 
+    
+# api to send email to all subscribers or users or specific user
+def _normalize_email_recipient(recipient):
+    if isinstance(recipient, str):
+        email = recipient.strip()
+        if not email:
+            return None
+        return {"email": email, "name": email.split("@")[0] if "@" in email else "Recipient"}
+
+    if isinstance(recipient, dict):
+        email = (recipient.get("email") or recipient.get("to") or "").strip()
+        if not email:
+            return None
+
+        name = (recipient.get("name") or recipient.get("full_name") or "").strip()
+        return {"email": email, "name": name or email.split("@")[0] if "@" in email else "Recipient"}
+
+    return None
+
+
+def _resolve_email_recipients(data):
+    recipient_type = (data.get("recipient_type") or "custom").strip().lower()
+    user_id = data.get("user_id")
+    subscriber_id = data.get("subscriber_id")
+
+    if recipient_type in {"all_subscribers", "subscribers", "subscriber"}:
+        recipients = Subscriber.query.with_entities(Subscriber.email, Subscriber.name).all()
+        return [
+            {"email": (email or "").strip(), "name": (name or "Subscriber").strip() or "Subscriber"}
+            for email, name in recipients
+            if (email or "").strip()
+        ]
+
+    if recipient_type in {"all_users", "users", "user"}:
+        recipients = User.query.filter(User.active.is_(True)).with_entities(
+            User.email,
+            User.first_name,
+            User.last_name,
+        ).all()
+        resolved = []
+        seen_emails = set()
+
+        for email, first_name, last_name in recipients:
+            email = (email or "").strip()
+            if not email or email in seen_emails:
+                continue
+
+            seen_emails.add(email)
+            name = " ".join([part for part in [first_name, last_name] if part]).strip()
+            resolved.append({"email": email, "name": name or "User"})
+
+        return resolved
+
+    if recipient_type in {"specific_user", "single_user", "user_id", "single"}:
+        if user_id:
+            user = User.query.get(user_id)
+            if not user or not (user.email or "").strip():
+                return []
+
+            full_name = " ".join([part for part in [user.first_name, user.last_name] if part]).strip()
+            return [{"email": user.email.strip(), "name": full_name or "User"}]
+
+        specific_email = (data.get("recipient_email") or data.get("email") or "").strip()
+        if specific_email:
+            return [{"email": specific_email, "name": data.get("recipient_name") or "User"}]
+
+        return []
+
+    if recipient_type in {"specific_subscriber", "single_subscriber"}:
+        if subscriber_id:
+            subscriber = Subscriber.query.get(subscriber_id)
+            if not subscriber or not (subscriber.email or "").strip():
+                return []
+
+            return [{"email": subscriber.email.strip(), "name": (subscriber.name or "Subscriber").strip() or "Subscriber"}]
+
+        specific_email = (data.get("recipient_email") or data.get("email") or "").strip()
+        if specific_email:
+            return [{"email": specific_email, "name": data.get("recipient_name") or "Subscriber"}]
+
+        return []
+
+    raw_recipients = data.get("recipients") or []
+    if not isinstance(raw_recipients, list):
+        return []
+
+    resolved = []
+    seen_emails = set()
+    for recipient in raw_recipients:
+        normalized = _normalize_email_recipient(recipient)
+        if not normalized:
+            continue
+
+        email = normalized["email"]
+        if email in seen_emails:
+            continue
+
+        seen_emails.add(email)
+        resolved.append(normalized)
+
+    return resolved
+
+
+def _send_bulk_email_async(app, recipients, subject, body):
+    try:
+        with app.app_context():
+            for recipient in recipients:
+                try:
+                    send_plain_email(recipient["email"], subject, body)
+                except Exception as email_error:
+                    app.logger.warning(
+                        "Admin email failed for %s: %s",
+                        recipient["email"],
+                        email_error,
+                    )
+    except Exception as error:
+        app.logger.warning("Admin email dispatch failed: %s", error)
+    finally:
+        with app.app_context():
+            db.session.remove()
+
+
+def _queue_admin_email_dispatch(recipients, subject, body):
+    app = current_app._get_current_object()
+    worker = Thread(
+        target=_send_bulk_email_async,
+        args=(app, recipients, subject, body),
+        daemon=True,
+    )
+    worker.start()
+
+
+# api to send email to all subscribers or users or specific user
+@owner_bp.route("/api/admin/send_email", methods=["POST"])
+@token_required
+@roles_required("admin")
+def admin_send_email(current_user):
+    data = request.get_json(silent=True) or {}
+
+    subject = (data.get("subject") or "").strip()
+    body = (data.get("body") or "").strip()
+    recipients = _resolve_email_recipients(data)
+
+    if not recipients or not subject or not body:
+        return jsonify({"error": "Invalid request data"}), 400
+
+    _queue_admin_email_dispatch(recipients, subject, body)
+
+    return jsonify({
+        "success": True,
+        "message": "Email queued successfully",
+        "recipient_count": len(recipients)
+    }), 200

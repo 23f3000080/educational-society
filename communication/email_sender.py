@@ -177,3 +177,24 @@ Regards,
 Educational Society Team
 """
     send_plain_email(to_email, subject, body)
+
+
+def send_notification_email(to_email, recipient_name, title, message, notification_type="info"):
+    subject = f"New Notification - {title}"
+    body = f"""
+Hello {recipient_name or 'Student'},
+
+You have a new notification.
+
+Title: {title}
+Type: {notification_type}
+
+Message:
+{message}
+
+Please login to your dashboard to view the full notification details.
+
+Regards,
+Educational Society Team
+"""
+    send_plain_email(to_email, subject, body)
