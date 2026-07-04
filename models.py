@@ -79,8 +79,8 @@ class UsersRoles(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
 
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
-    role_id = db.Column(db.Integer, db.ForeignKey('roles.id'))
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id', ondelete="CASCADE"))
+    role_id = db.Column(db.Integer, db.ForeignKey('roles.id', ondelete="CASCADE"))
 
 
 # -------------------------
@@ -139,7 +139,7 @@ class MobileOTP(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
 
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id', ondelete="CASCADE"), nullable=False)
 
     mobile_no = db.Column(db.String(15), nullable=False)
 
@@ -152,7 +152,7 @@ class MobileOTP(db.Model):
         default=lambda: datetime.now(timezone.utc)
     )
 
-    user = db.relationship('User', backref='mobile_otps')
+    user = db.relationship('User', backref=db.backref('mobile_otps', lazy=True, cascade="all, delete-orphan"))
 
 
 # -------------------------
@@ -183,11 +183,11 @@ class UserNotification(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
 
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
 
     notification_id = db.Column(
         db.Integer,
-        db.ForeignKey("notifications.id"),
+        db.ForeignKey("notifications.id", ondelete="CASCADE"),
         nullable=False
     )
 
@@ -200,7 +200,7 @@ class UserNotification(db.Model):
         default=lambda: datetime.now(timezone.utc)
     )
 
-    user = db.relationship("User", backref="notifications")
+    user = db.relationship("User", backref=db.backref("notifications", lazy=True, cascade="all, delete-orphan"))
 
     notification = db.relationship("Notification")
 
@@ -245,9 +245,9 @@ class Enrollment(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
 
-    student_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    student_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"))
 
-    course_id = db.Column(db.Integer, db.ForeignKey("courses.id"))
+    course_id = db.Column(db.Integer, db.ForeignKey("courses.id", ondelete="CASCADE"))
 
     payment_id = db.Column(db.String(120))
 
@@ -260,9 +260,9 @@ class Enrollment(db.Model):
         default=lambda: datetime.now(timezone.utc)
     )
 
-    student = db.relationship("User", backref="enrollments")
+    student = db.relationship("User", backref=db.backref("enrollments", lazy=True, cascade="all, delete-orphan"))
 
-    course = db.relationship("Course", backref="enrollments")
+    course = db.relationship("Course", backref=db.backref("enrollments", lazy=True, cascade="all, delete-orphan"))
 
 
 # -------------------------
@@ -274,7 +274,7 @@ class Week(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
 
-    course_id = db.Column(db.Integer, db.ForeignKey('courses.id'))
+    course_id = db.Column(db.Integer, db.ForeignKey('courses.id', ondelete="CASCADE"))
 
     week_number = db.Column(db.Integer)
 
@@ -286,7 +286,7 @@ class Week(db.Model):
         default=lambda: datetime.now(timezone.utc)
     )
 
-    course = db.relationship("Course", backref="weeks")
+    course = db.relationship("Course", backref=db.backref("weeks", lazy=True, cascade="all, delete-orphan"))
 
 
 class Video(db.Model):
@@ -294,7 +294,7 @@ class Video(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
 
-    week_id = db.Column(db.Integer, db.ForeignKey('weeks.id'))
+    week_id = db.Column(db.Integer, db.ForeignKey('weeks.id', ondelete="CASCADE"))
 
     title = db.Column(db.String(200))
 
@@ -311,7 +311,7 @@ class Video(db.Model):
         default=lambda: datetime.now(timezone.utc)
     )
 
-    week = db.relationship("Week", backref="videos")
+    week = db.relationship("Week", backref=db.backref("videos", lazy=True, cascade="all, delete-orphan"))
 
 
 class Note(db.Model):
@@ -319,7 +319,7 @@ class Note(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
 
-    week_id = db.Column(db.Integer, db.ForeignKey('weeks.id'))
+    week_id = db.Column(db.Integer, db.ForeignKey('weeks.id', ondelete="CASCADE"))
 
     title = db.Column(db.String(200))
 
@@ -334,7 +334,7 @@ class Note(db.Model):
         default=lambda: datetime.now(timezone.utc)
     )
 
-    week = db.relationship("Week", backref="notes")
+    week = db.relationship("Week", backref=db.backref("notes", lazy=True, cascade="all, delete-orphan"))
 
 
 # -------------------------
@@ -346,8 +346,8 @@ class Assignment(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
 
-    course_id = db.Column(db.Integer, db.ForeignKey("courses.id"))
-    week_id = db.Column(db.Integer, db.ForeignKey("weeks.id"))
+    course_id = db.Column(db.Integer, db.ForeignKey("courses.id", ondelete="CASCADE"))
+    week_id = db.Column(db.Integer, db.ForeignKey("weeks.id", ondelete="CASCADE"))
 
     title = db.Column(db.String(150))
 
@@ -367,8 +367,8 @@ class Assignment(db.Model):
         onupdate=lambda: datetime.now(timezone.utc)
     )
 
-    course = db.relationship("Course", backref="assignments")
-    week = db.relationship("Week", backref="assignments")
+    course = db.relationship("Course", backref=db.backref("assignments", lazy=True, cascade="all, delete-orphan"))
+    week = db.relationship("Week", backref=db.backref("assignments", lazy=True, cascade="all, delete-orphan"))
 
 
 # -------------------------
@@ -380,8 +380,8 @@ class Test(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
 
-    course_id = db.Column(db.Integer, db.ForeignKey("courses.id"))
-    week_id = db.Column(db.Integer, db.ForeignKey("weeks.id"))
+    course_id = db.Column(db.Integer, db.ForeignKey("courses.id", ondelete="CASCADE"))
+    week_id = db.Column(db.Integer, db.ForeignKey("weeks.id", ondelete="CASCADE"))
 
     title = db.Column(db.String(150), nullable=False)
     description = db.Column(db.Text)
@@ -414,8 +414,8 @@ class Test(db.Model):
         onupdate=lambda: datetime.now(timezone.utc)
     )
 
-    course = db.relationship("Course", backref="tests")
-    week = db.relationship("Week", backref="tests")
+    course = db.relationship("Course", backref=db.backref("tests", lazy=True, cascade="all, delete-orphan"))
+    week = db.relationship("Week", backref=db.backref("tests", lazy=True, cascade="all, delete-orphan"))
 
 
 class TestQuestion(db.Model):
@@ -425,7 +425,7 @@ class TestQuestion(db.Model):
 
     test_id = db.Column(
         db.Integer,
-        db.ForeignKey("tests.id")
+        db.ForeignKey("tests.id", ondelete="CASCADE")
     )
 
     question_text = db.Column(db.Text, nullable=False)
@@ -438,7 +438,7 @@ class TestQuestion(db.Model):
         default=lambda: datetime.now(timezone.utc)
     )
 
-    test = db.relationship("Test", backref="questions")
+    test = db.relationship("Test", backref=db.backref("questions", lazy=True, cascade="all, delete-orphan"))
 
 
 class TestQuestionOption(db.Model):
@@ -448,13 +448,13 @@ class TestQuestionOption(db.Model):
 
     question_id = db.Column(
         db.Integer,
-        db.ForeignKey("test_questions.id")
+        db.ForeignKey("test_questions.id", ondelete="CASCADE")
     )
 
     option_text = db.Column(db.String(500))
     is_correct = db.Column(db.Boolean, default=False)
 
-    question = db.relationship("TestQuestion", backref="options")
+    question = db.relationship("TestQuestion", backref=db.backref("options", lazy=True, cascade="all, delete-orphan"))
 
 
 class TestFillBlankAnswer(db.Model):
@@ -464,12 +464,12 @@ class TestFillBlankAnswer(db.Model):
 
     question_id = db.Column(
         db.Integer,
-        db.ForeignKey("test_questions.id")
+        db.ForeignKey("test_questions.id", ondelete="CASCADE")
     )
 
     correct_answer = db.Column(db.String(255))
 
-    question = db.relationship("TestQuestion", backref="blank_answers")
+    question = db.relationship("TestQuestion", backref=db.backref("blank_answers", lazy=True, cascade="all, delete-orphan"))
 
 
 class TestSubmission(db.Model):
@@ -477,8 +477,8 @@ class TestSubmission(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
 
-    test_id = db.Column(db.Integer, db.ForeignKey("tests.id"))
-    student_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    test_id = db.Column(db.Integer, db.ForeignKey("tests.id", ondelete="CASCADE"))
+    student_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"))
 
     attempt_no = db.Column(db.Integer, default=1)
     status = db.Column(db.String(20), default="submitted")
@@ -501,7 +501,7 @@ class TestSubmission(db.Model):
 
     ended_at = db.Column(db.DateTime(timezone=True))
 
-    test = db.relationship("Test", backref="submissions")
+    test = db.relationship("Test", backref=db.backref("submissions", lazy=True, cascade="all, delete-orphan"))
     student = db.relationship("User")
 
 
@@ -516,7 +516,7 @@ class Question(db.Model):
 
     assignment_id = db.Column(
         db.Integer,
-        db.ForeignKey("assignments.id")
+        db.ForeignKey("assignments.id", ondelete="CASCADE")
     )
 
     question_text = db.Column(db.Text, nullable=False)
@@ -535,7 +535,7 @@ class Question(db.Model):
         default=lambda: datetime.now(timezone.utc)
     )
 
-    assignment = db.relationship("Assignment", backref="questions")
+    assignment = db.relationship("Assignment", backref=db.backref("questions", lazy=True, cascade="all, delete-orphan"))
 
 
 class QuestionOption(db.Model):
@@ -545,14 +545,14 @@ class QuestionOption(db.Model):
 
     question_id = db.Column(
         db.Integer,
-        db.ForeignKey("questions.id")
+        db.ForeignKey("questions.id", ondelete="CASCADE")
     )
 
     option_text = db.Column(db.String(500))
 
     is_correct = db.Column(db.Boolean, default=False)
 
-    question = db.relationship("Question", backref="options")
+    question = db.relationship("Question", backref=db.backref("options", lazy=True, cascade="all, delete-orphan"))
 
 
 class FillBlankAnswer(db.Model):
@@ -562,12 +562,12 @@ class FillBlankAnswer(db.Model):
 
     question_id = db.Column(
         db.Integer,
-        db.ForeignKey("questions.id")
+        db.ForeignKey("questions.id", ondelete="CASCADE")
     )
 
     correct_answer = db.Column(db.String(255))
 
-    question = db.relationship("Question", backref="blank_answers")
+    question = db.relationship("Question", backref=db.backref("blank_answers", lazy=True, cascade="all, delete-orphan"))
 
 
 # -------------------------
@@ -579,13 +579,13 @@ class StudentAnswer(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
 
-    student_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    student_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"))
 
-    question_id = db.Column(db.Integer, db.ForeignKey("questions.id"))
+    question_id = db.Column(db.Integer, db.ForeignKey("questions.id", ondelete="CASCADE"))
 
     selected_option_id = db.Column(
         db.Integer,
-        db.ForeignKey("question_options.id")
+        db.ForeignKey("question_options.id", ondelete="CASCADE")
     )
 
     text_answer = db.Column(db.String(500))
@@ -595,7 +595,7 @@ class StudentAnswer(db.Model):
         default=lambda: datetime.now(timezone.utc)
     )
 
-    student = db.relationship("User", backref="answers")
+    student = db.relationship("User", backref=db.backref("answers", lazy=True, cascade="all, delete-orphan"))
 
     question = db.relationship("Question")
 
@@ -606,8 +606,8 @@ class AssignmentSubmission(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
 
-    assignment_id = db.Column(db.Integer, db.ForeignKey("assignments.id"))
-    student_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    assignment_id = db.Column(db.Integer, db.ForeignKey("assignments.id", ondelete="CASCADE"))
+    student_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"))
 
     submitted_at = db.Column(
         db.DateTime(timezone=True),
@@ -616,7 +616,7 @@ class AssignmentSubmission(db.Model):
         onupdate=lambda: datetime.now(timezone.utc)
     )
 
-    assignment = db.relationship("Assignment", backref="submissions")
+    assignment = db.relationship("Assignment", backref=db.backref("submissions", lazy=True, cascade="all, delete-orphan"))
     student = db.relationship("User")
 
 
@@ -628,14 +628,14 @@ class CourseProgress(db.Model):
     __tablename__ = "course_progress"
 
     id = db.Column(db.Integer, primary_key=True)
-    student_id = db.Column(db.Integer, db.ForeignKey('users.id'))
-    course_id = db.Column(db.Integer, db.ForeignKey('courses.id'))
+    student_id = db.Column(db.Integer, db.ForeignKey('users.id', ondelete="CASCADE"))
+    course_id = db.Column(db.Integer, db.ForeignKey('courses.id', ondelete="CASCADE"))
     content_type = db.Column(db.String(50))
     content_key = db.Column(db.String(100))
     completed = db.Column(db.Boolean, default=False)
     # completed_at = db.Column(db.DateTime)
-    student = db.relationship("User", backref="course_progress")
-    course = db.relationship("Course", backref="course_progress")
+    student = db.relationship("User", backref=db.backref("course_progress", lazy=True, cascade="all, delete-orphan"))
+    course = db.relationship("Course", backref=db.backref("course_progress", lazy=True, cascade="all, delete-orphan"))
 
 # live class model
 class LiveClass(db.Model):

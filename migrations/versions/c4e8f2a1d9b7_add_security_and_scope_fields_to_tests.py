@@ -45,10 +45,10 @@ def upgrade():
 
     op.execute("UPDATE tests SET test_scope = 'week' WHERE test_scope IS NULL OR test_scope = ''")
     op.execute("UPDATE tests SET max_attempts = 1 WHERE max_attempts IS NULL")
-    op.execute("UPDATE tests SET shuffle_questions = 1 WHERE shuffle_questions IS NULL")
-    op.execute("UPDATE tests SET shuffle_options = 1 WHERE shuffle_options IS NULL")
-    op.execute("UPDATE tests SET require_fullscreen = 1 WHERE require_fullscreen IS NULL")
-    op.execute("UPDATE tests SET prevent_tab_switch = 1 WHERE prevent_tab_switch IS NULL")
+    op.execute("UPDATE tests SET shuffle_questions = true WHERE shuffle_questions IS NULL")
+    op.execute("UPDATE tests SET shuffle_options = true WHERE shuffle_options IS NULL")
+    op.execute("UPDATE tests SET require_fullscreen = true WHERE require_fullscreen IS NULL")
+    op.execute("UPDATE tests SET prevent_tab_switch = true WHERE prevent_tab_switch IS NULL")
 
 
 def downgrade():
