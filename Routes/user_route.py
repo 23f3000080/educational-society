@@ -1174,3 +1174,53 @@ def fetch_my_courses_details(current_user):
         })
 
     return jsonify(result), 200
+
+@user_bp.route("/api/courses", methods=["GET"])
+@token_required
+@roles_required("user", "admin")
+def get_all_courses(current_user):
+    """Get all courses"""
+    courses = Course.query.filter_by(is_active=True).all()
+    result = []
+    for course in courses:
+        # total weeks in course
+        total_weeks = Week.query.filter_by(course_id=course.id).count()
+        result.append({
+            "id": course.id,
+            "course_code": course.course_code,
+            "title": course.title,
+            "class_level": course.class_level,
+            "subject": course.subject,
+            "description": course.description,
+            "duration_months": course.duration_months,
+            "fee": float(course.fee) if course.fee else 0,
+            "start_date": course.start_date.isoformat() if course.start_date else None,
+            "end_date": course.end_date.isoformat() if course.end_date else None,
+            "picture": course.picture,
+            "is_active": course.is_active,
+            "total_weeks": total_weeks
+        })
+    return jsonify(result), 200
+
+# api to check user is enrolled in a course or not
+@user_bp.route("/api/check-enrollment/<int:course_id>", methods=["GET"])
+@token_required
+@roles_required("user")
+def check_user_enrollment(current_user, course_id):
+    """Check if user is enrolled in a course"""
+    enrollment = Enrollment.query.filter_by(
+        student_id=current_user.id,
+        course_id=course_id,
+        enrollment_status='active'
+    ).first()
+
+    if enrollment:
+        return jsonify({
+            "enrolled": True,
+            "payment_status": enrollment.payment_status,
+            "enrollment_date": enrollment.enrollment_date.isoformat() if enrollment.enrollment_date else None
+        }), 200
+    else:
+        return jsonify({
+            "enrolled": False
+        }), 200
