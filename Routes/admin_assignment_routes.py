@@ -209,6 +209,7 @@ def create_question(current_user, assignment_id):
     # Handle options for MCQ and multiple select
     if data['question_type'] in ['mcq', 'multiple_select']:
         options_data = data.get('options', [])
+        print("Options Data:", options_data)  # Debugging line
         if not options_data:
             return jsonify({"error": "Options are required for MCQ/Multiple Select questions"}), 400
         

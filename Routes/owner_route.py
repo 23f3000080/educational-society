@@ -1,3 +1,19 @@
+import base64
+import io
+import random
+import string
+import qrcode
+from io import BytesIO
+
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+from reportlab.lib.fonts import addMapping
+
 from models import *
 from flask import Blueprint, request, jsonify, current_app
 from Routes.base_route import token_required, roles_required
@@ -10,10 +26,12 @@ owner_bp = Blueprint("owner", __name__)
 # --------------- Course Picture Upload Helper ---------------
 import os
 import uuid
-from werkzeug.utils import secure_filename
+from werkzeug.utils import secure_filename, send_file
 
 UPLOAD_FOLDER = "uploads/course_pictures"
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
+
+frontend_host_url = "https://educational-society.vercel.app/"  # Replace with your actual frontend host URL
 
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -1028,3 +1046,627 @@ def admin_send_email(current_user):
         "message": "Email queued successfully",
         "recipient_count": len(recipients)
     }), 200
+
+# generate certificate for a user in a course
+def generate_certificate_number(course_code):
+    """
+    Format:
+    ESS-2026-PY-483921-X9K2
+    """
+    if not course_code:
+        raise ValueError("Course code must be provided")
+
+    year = datetime.now().year
+    
+    # clean course code
+    course_code = course_code.strip().upper()
+    
+    # random 6-digit number
+    serial_number = random.randint(100000, 999999)
+    
+    # Random 4-character verification code
+    verification = ''.join(
+        random.choices(string.ascii_uppercase + string.digits, k=4)
+    )
+    
+    return f"ESS-{year}-{course_code}-{serial_number}-{verification}"
+
+# generate certifiacte qr code
+def generate_qr(url):
+    qr = qrcode.make(url)
+
+    buffer = io.BytesIO()
+    qr.save(buffer, format="PNG")
+
+    return base64.b64encode(buffer.getvalue()).decode()
+
+# api to generate certificate for a user in a course
+# generate certificate for a user in a course
+@owner_bp.route("/api/admin/generate_certificate", methods=["POST"])
+@token_required
+@roles_required("admin")
+def admin_generate_certificate(current_user):
+    data = request.get_json(silent=True) or {}
+    
+    print(f"Received data for certificate generation: {data}")
+
+    user_id = data.get("user_id")
+    course_id = data.get("course_id")
+    course_code = data.get("course_code")  # This is the 2-character code from admin
+
+    if not user_id or not course_id or not course_code:
+        return jsonify({"error": "user_id, course_id, and course_code are required"}), 400
+
+    user = User.query.get(user_id)
+    course = Course.query.get(course_id)
+
+    if not user or not course:
+        return jsonify({"error": "User or Course not found"}), 404
+
+    try:
+        certificate_number = generate_certificate_number(course_code)  # Use the 2-char code
+        
+        # Create certificate - make sure column names match your model
+        certificate = Certificate(
+            student_id=user.id,
+            course_id=course.id,
+            course_code=course_code,  # Store the 2-character code
+            duration_months=course.duration_months,
+            completion_date=datetime.now().date(),
+            grade=data.get("grade"),
+            project_title=data.get("project_title"),
+            description=data.get("description"),
+            instructor_name=data.get("instructor_name"),
+            certificate_number=certificate_number,
+            verification_token=''.join(random.choices(string.ascii_letters + string.digits, k=20)),
+            status="verified",
+        )
+        db.session.add(certificate)
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "message": "Certificate generated successfully",
+            "certificate_number": certificate_number,
+            "verification_token": certificate.verification_token
+        }), 200
+    except Exception as e:
+        current_app.logger.error(f"Certificate generation failed: {e}")
+        return jsonify({"error": f"Certificate generation failed: {str(e)}"}), 500
+    
+# api to update certificate data
+@owner_bp.route("/api/admin/update_certificate/<int:certificate_id>", methods=["PUT"])
+@token_required
+@roles_required("admin")
+def admin_update_certificate(current_user, certificate_id):
+    certificate = Certificate.query.get(certificate_id)
+    if not certificate:
+        return jsonify({"error": "Certificate not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+
+    certificate.duration_months = data.get("duration_months", certificate.duration_months)
+    certificate.completion_date = data.get("completion_date", certificate.completion_date)
+    certificate.grade = data.get("grade", certificate.grade)
+    certificate.project_title = data.get("project_title", certificate.project_title)
+    certificate.description = data.get("description", certificate.description)
+    certificate.instructor_name = data.get("instructor_name", certificate.instructor_name)
+    certificate.status = data.get("status", certificate.status)
+    certificate.course_code = data.get("course_code", certificate.course_code)
+
+    db.session.commit()
+
+    return jsonify({
+        "success": True,
+        "message": "Certificate updated successfully"
+    }), 200
+    
+# api to delete certificate
+@owner_bp.route("/api/admin/delete_certificate/<int:certificate_id>", methods=["DELETE"])
+@token_required
+@roles_required("admin")
+def admin_delete_certificate(current_user, certificate_id):
+    certificate = Certificate.query.get(certificate_id)
+    if not certificate:
+        return jsonify({"error": "Certificate not found"}), 404
+
+    db.session.delete(certificate)
+    db.session.commit()
+
+    return jsonify({
+        "success": True,
+        "message": "Certificate deleted successfully"
+    }), 200
+    
+# api to get all certificates
+@owner_bp.route("/api/admin/certificates", methods=["GET"])
+@token_required
+@roles_required("admin")
+def admin_get_certificates(current_user):
+    certificates = Certificate.query.all()
+    result = []
+
+    for cert in certificates:
+        user = User.query.get(cert.student_id)
+        course = Course.query.get(cert.course_id)
+        result.append({
+            "id": cert.id,
+            "user_id": cert.student_id,
+            "user_name": f"{user.first_name} {user.last_name}" if user else None,
+            "user_email": user.email if user else None,
+            "course_id": cert.course_id,
+            "course_title": course.title if course else None,
+            "course_start_date": course.start_date.isoformat() if course and course.start_date else None,
+            "course_end_date": course.end_date.isoformat() if course and course.end_date else None,
+            "duration_months": cert.duration_months,
+            "completion_date": cert.completion_date.isoformat() if cert.completion_date else None,
+            "grade": cert.grade,
+            "project_title": cert.project_title,
+            "description": cert.description,
+            "instructor_name": cert.instructor_name,
+            "certificate_number": cert.certificate_number,
+            "verification_token": cert.verification_token,
+            "status": cert.status
+        })
+
+    return jsonify(result), 200
+
+# api to get all users, courses for certificate generation
+@owner_bp.route("/api/admin/certificate_data", methods=["GET"])
+@token_required
+@roles_required("admin")
+def admin_get_certificate_data(current_user):
+    users = User.query.filter(User.active.is_(True)).order_by(User.joining_date.desc().nullslast()).all()
+    courses = Course.query.order_by(Course.start_date.desc().nullslast()).all()
+
+    return jsonify({
+        "users": [{"id": user.id, "name": f"{user.first_name} {user.last_name}", "email": user.email} for user in users],
+        "courses": [{"id": course.id, "title": course.title, "course_code": course.course_code} for course in courses]
+    }), 200
+    
+
+# student side certificates api
+# Generate QR code for certificate verification
+def generate_qr_code(verification_url):
+    """Generate QR code for certificate verification"""
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(verification_url)
+    qr.make(fit=True)
+
+    img = qr.make_image(fill_color="black", back_color="white")
+    buffered = io.BytesIO()
+    img.save(buffered, format="PNG")
+    return base64.b64encode(buffered.getvalue()).decode()
+
+# API to get certificate for a student
+@owner_bp.route("/api/certificates/<int:certificate_id>", methods=["GET"])
+@token_required
+def get_certificate(current_user, certificate_id):
+    """Get certificate details for viewing"""
+    certificate = Certificate.query.get(certificate_id)
+    
+    if not certificate:
+        return jsonify({"error": "Certificate not found"}), 404
+    
+    # Check if user has access to this certificate
+    if current_user.roles != 'admin' and certificate.student_id != current_user.id:
+        return jsonify({"error": "Unauthorized access"}), 403
+    
+    user = User.query.get(certificate.student_id)
+    course = Course.query.get(certificate.course_id)
+    
+    
+    # Generate verification URL
+    verification_url = f"{frontend_host_url}verify-certificate/{certificate.verification_token}"
+    
+    # Generate QR code
+    qr_code_base64 = generate_qr_code(verification_url)
+    
+    return jsonify({
+        "id": certificate.id,
+        "user_id": certificate.student_id,
+        "user_name": f"{user.first_name} {user.last_name}" if user else None,
+        "user_email": user.email if user else None,
+        "course_id": certificate.course_id,
+        "course_title": course.title if course else None,
+        "course_code": certificate.course_code,
+        "duration_months": certificate.duration_months,
+        "completion_date": certificate.completion_date.isoformat() if certificate.completion_date else None,
+        "grade": certificate.grade,
+        "project_title": certificate.project_title,
+        "description": certificate.description,
+        "instructor_name": certificate.instructor_name,
+        "certificate_number": certificate.certificate_number,
+        "verification_token": certificate.verification_token,
+        "status": certificate.status,
+        "qr_code": qr_code_base64,
+        "verification_url": verification_url,
+        "generated_date": certificate.generated_date.isoformat() if hasattr(certificate, 'generated_date') and certificate.generated_date else None
+    }), 200
+    
+# API to get all certificates for a student
+@owner_bp.route("/api/my-certificates", methods=["GET"])
+@token_required
+def get_my_certificates(current_user):
+    """Get all certificates for the current user"""
+    certificates = Certificate.query.filter_by(student_id=current_user.id).order_by(Certificate.completion_date.desc()).all()
+    
+    result = []
+    for cert in certificates:
+        course = Course.query.get(cert.course_id)
+        result.append({
+            "id": cert.id,
+            "course_title": course.title if course else "Unknown Course",
+            "course_code": cert.course_code,
+            "certificate_number": cert.certificate_number,
+            "completion_date": cert.completion_date.isoformat() if cert.completion_date else None,
+            "grade": cert.grade,
+            "status": cert.status,
+            "verification_token": cert.verification_token
+        })
+    
+    return jsonify(result), 200
+
+# API to download certificate as PDF
+@owner_bp.route("/api/certificates/<int:certificate_id>/download", methods=["GET"])
+@token_required
+def download_certificate_pdf(current_user, certificate_id):
+    """Download certificate as PDF"""
+    certificate = Certificate.query.get(certificate_id)
+    
+    if not certificate:
+        return jsonify({"error": "Certificate not found"}), 404
+    
+    # Check if user has access to this certificate
+    if current_user.roles != 'admin' and certificate.student_id != current_user.id:
+        return jsonify({"error": "Unauthorized access"}), 403
+    
+    user = User.query.get(certificate.student_id)
+    course = Course.query.get(certificate.course_id)
+    
+    # Generate verification URL
+    host_url = frontend_host_url
+    verification_url = f"{host_url}verify-certificate/{certificate.verification_token}"
+    
+    # Generate QR code
+    qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
+    qr.add_data(verification_url)
+    qr.make(fit=True)
+    qr_img = qr.make_image(fill_color="black", back_color="white")
+    
+    # Create PDF with minimal margins
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), 
+                           leftMargin=40, rightMargin=40, 
+                           topMargin=30, bottomMargin=30)
+    
+    # Custom Styles
+    styles = getSampleStyleSheet()
+    
+    # Institution Name Style
+    inst_style = ParagraphStyle(
+        'InstStyle',
+        parent=styles['Heading1'],
+        fontSize=14,
+        textColor=colors.HexColor('#1a1a2e'),
+        alignment=TA_CENTER,
+        spaceAfter=3,
+        fontName='Helvetica-Bold',
+        letterSpacing=5
+    )
+    
+    # Certificate Title Style
+    title_style = ParagraphStyle(
+        'TitleStyle',
+        parent=styles['Heading1'],
+        fontSize=28,
+        textColor=colors.HexColor('#1a1a2e'),
+        alignment=TA_CENTER,
+        spaceAfter=12,
+        fontName='Helvetica-Bold',
+        letterSpacing=3
+    )
+    
+    # Subtitle Style
+    subtitle_style = ParagraphStyle(
+        'SubtitleStyle',
+        parent=styles['Heading2'],
+        fontSize=12,
+        textColor=colors.HexColor('#5a6c7d'),
+        alignment=TA_CENTER,
+        spaceAfter=6,
+        fontName='Helvetica'
+    )
+    
+    # Name Style
+    name_style = ParagraphStyle(
+        'NameStyle',
+        parent=styles['Heading1'],
+        fontSize=38,
+        textColor=colors.HexColor('#1a237e'),
+        alignment=TA_CENTER,
+        spaceAfter=10,
+        fontName='Helvetica-Bold',
+        letterSpacing=1
+    )
+    
+    # Course Style
+    course_style = ParagraphStyle(
+        'CourseStyle',
+        parent=styles['Heading2'],
+        fontSize=24,
+        textColor=colors.HexColor('#c9a84c'),
+        alignment=TA_CENTER,
+        spaceAfter=16,
+        fontName='Helvetica-Bold'
+    )
+    
+    # Body Style
+    body_style = ParagraphStyle(
+        'BodyStyle',
+        parent=styles['Normal'],
+        fontSize=12,
+        alignment=TA_CENTER,
+        spaceAfter=3,
+        textColor=colors.HexColor('#34495e'),
+        fontName='Helvetica'
+    )
+    
+    # Code Style
+    code_style = ParagraphStyle(
+        'CodeStyle',
+        parent=styles['Normal'],
+        fontSize=8,
+        alignment=TA_LEFT,
+        textColor=colors.HexColor('#4a4a4a'),
+        fontName='Courier',
+        leading=12
+    )
+    
+    # Footer Style
+    footer_style = ParagraphStyle(
+        'FooterStyle',
+        parent=styles['Normal'],
+        fontSize=7.5,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor('#95a5a6'),
+        fontName='Helvetica',
+        letterSpacing=0.5
+    )
+    
+    # === BACKGROUND DRAWING FUNCTION - Left side to top ===
+    def draw_background(canvas, document):
+        canvas.saveState()
+        width, height = document.pagesize
+        
+        # 1. Soft blue-gray shape (Left side - extending to top)
+        canvas.setFillColor(colors.HexColor('#f0f4f8'))
+        p1 = canvas.beginPath()
+        p1.moveTo(0, height)  # Start from top-left
+        p1.lineTo(width * 0.25, height)  # Go to right at top
+        p1.curveTo(
+            width * 0.20, height * 0.60,
+            width * 0.08, height * 0.75,
+            0, height * 0.50
+        )
+        p1.close()
+        canvas.drawPath(p1, fill=1, stroke=0)
+        
+        # 2. Light gold shape (Bottom-Right corner)
+        canvas.setFillColor(colors.HexColor('#faf6ed'))
+        p2 = canvas.beginPath()
+        p2.moveTo(width * 0.55, 0)
+        p2.lineTo(width * 0.70, 0)
+        p2.curveTo(
+            width * 0.78, height * 0.25,
+            width * 0.90, height * 0.18,
+            width, height * 0.40
+        )
+        p2.lineTo(width, 0)
+        p2.close()
+        canvas.drawPath(p2, fill=1, stroke=0)
+        
+        # 3. Gold curve line (bottom-right)
+        canvas.setStrokeColor(colors.HexColor('#d4af37'))
+        canvas.setLineWidth(1.2)
+        p3 = canvas.beginPath()
+        p3.moveTo(width * 0.55, 0)
+        p3.curveTo(
+            width * 0.65, height * 0.12,
+            width * 0.82, height * 0.08,
+            width, height * 0.30
+        )
+        canvas.drawPath(p3, fill=0, stroke=1)
+        
+        # 4. Navy curve line (bottom-right)
+        canvas.setStrokeColor(colors.HexColor('#1a237e'))
+        canvas.setLineWidth(0.6)
+        p4 = canvas.beginPath()
+        p4.moveTo(width * 0.65, 0)
+        p4.curveTo(
+            width * 0.72, height * 0.15,
+            width * 0.88, height * 0.10,
+            width, height * 0.35
+        )
+        canvas.drawPath(p4, fill=0, stroke=1)
+        
+        canvas.restoreState()
+
+    # Build PDF content
+    story = []
+    
+    # === HEADER ===
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("EDUCATIONAL SOCIETY", inst_style))
+    story.append(Spacer(1, 4))
+    
+    # Gold decorative line
+    gold_line = Table([['']], colWidths=[120])
+    gold_line.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#d4af37')),
+        ('HEIGHT', (0, 0), (-1, -1), 1.5),
+    ]))
+    story.append(gold_line)
+    story.append(Spacer(1, 8))
+    
+    story.append(Paragraph("CERTIFICATE OF COMPLETION", title_style))
+    story.append(Spacer(1, 8))
+    
+    # === BODY ===
+    story.append(Paragraph("This is to certify that", subtitle_style))
+    story.append(Spacer(1, 5))
+    
+    # Student Name
+    user_name = f"{user.first_name} {user.last_name}" if user else "Student"
+    story.append(Paragraph(user_name, name_style))
+    story.append(Spacer(1, 8))
+    
+    story.append(Paragraph("has successfully completed the course", body_style))
+    story.append(Spacer(1, 5))
+    
+    # Course Title
+    story.append(Paragraph(course.title if course else "Unknown Course", course_style))
+    story.append(Spacer(1, 12))
+    
+    # === COURSE DETAILS ===
+    details = []
+    if certificate.duration_months:
+        details.append(('Duration', f"{certificate.duration_months} Months"))
+    if course and course.start_date:
+        details.append(('Start Date', course.start_date.strftime('%b %d, %Y')))
+    if course and course.end_date:
+        details.append(('End Date', course.end_date.strftime('%b %d, %Y')))
+    if certificate.completion_date:
+        details.append(('Completion Date', certificate.completion_date.strftime('%b %d, %Y')))
+    if certificate.grade:
+        details.append(('Grade', certificate.grade))
+    if certificate.instructor_name:
+        details.append(('Instructor', certificate.instructor_name))
+    
+    # Create details layout - Dynamic columns
+    if details:
+        detail_data = []
+        row = []
+        
+        for label, value in details:
+            cell_content = f"""
+                <font color="#7f8c8d" size="8"><b>{label.upper()}</b></font><br/>
+                <font color="#2c3e50" size="12"><b>{value}</b></font>
+            """
+            row.append(Paragraph(cell_content, body_style))
+            
+            if len(row) == 3:
+                detail_data.append(row)
+                row = []
+        
+        if row:
+            while len(row) < 3:
+                row.append(Paragraph("", body_style))
+            detail_data.append(row)
+        
+        if detail_data:
+            col_width = 600 // len(detail_data[0]) if detail_data else 200
+            col_widths = [col_width] * len(detail_data[0])
+            
+            details_table = Table(detail_data, colWidths=col_widths)
+            details_table.setStyle(TableStyle([
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ]))
+            story.append(details_table)
+            story.append(Spacer(1, 14))
+    
+    # === QR CODE AND VERIFICATION ===
+    qr_buffer = BytesIO()
+    qr_img.save(qr_buffer, format='PNG')
+    qr_buffer.seek(0)
+    
+    # QR Code cell
+    qr_cell = Table([[Image(qr_buffer, width=55, height=55)]], colWidths=[55])
+    qr_cell.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+    
+    # Verification Info
+    verification_text = f"""
+        <b>Certificate No:</b> {certificate.certificate_number}<br/>
+        <b>Token:</b> {certificate.verification_token}
+    """
+    verification_cell = Paragraph(verification_text, code_style)
+    
+    # QR + Info Table
+    qr_verification_table = Table([[qr_cell, verification_cell]], colWidths=[70, 300])
+    qr_verification_table.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (0, 0), 'CENTER'),
+        ('ALIGN', (1, 0), (1, 0), 'LEFT'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#fafafa')),
+        ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor('#e8e8e8')),
+        ('PADDING', (0, 0), (-1, -1), 8),
+    ]))
+    
+    # Center the QR section
+    outer_table = Table([[qr_verification_table]], colWidths=[370])
+    outer_table.setStyle(TableStyle([('ALIGN', (0, 0), (-1, -1), 'CENTER')]))
+    
+    story.append(outer_table)
+    story.append(Spacer(1, 10))
+    
+    # === FOOTER ===
+    story.append(Paragraph(f"Verify at: {verification_url}", footer_style))
+    story.append(Spacer(1, 8))
+    
+    # Bottom thin line
+    bottom_line = Table([['']], colWidths=[250])
+    bottom_line.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#d4af37')),
+        ('HEIGHT', (0, 0), (-1, -1), 0.5),
+    ]))
+    story.append(bottom_line)
+    story.append(Spacer(1, 4))
+    
+    story.append(Paragraph("© Educational Society - All Rights Reserved", footer_style))
+    
+    # Build PDF with background
+    doc.build(story, onFirstPage=draw_background)
+    buffer.seek(0)
+    
+    # Create response with PDF
+    from flask import make_response
+    
+    response = make_response(buffer.getvalue())
+    response.headers.set('Content-Type', 'application/pdf')
+    response.headers.set('Content-Disposition', 'attachment', filename=f'certificate_{certificate.certificate_number}.pdf')
+    
+    return response
+
+@owner_bp.route("/verify-certificate/<token>", methods=["GET"])
+def verify_certificate(token):
+    certificate = Certificate.query.filter_by(verification_token=token).first()
+    
+    if not certificate:
+        return jsonify({"error": "Certificate not found"}), 404
+    
+    course = Course.query.get(certificate.course_id)
+    user = User.query.get(certificate.student_id)
+    
+    return jsonify({
+        "certificate_number": certificate.certificate_number,
+        "user_name": f"{user.first_name} {user.last_name}",
+        "course_title": course.title,
+        "duration_months": certificate.duration_months,
+        "start_date": course.start_date.strftime('%Y-%m-%d') if course and course.start_date else None,
+        "end_date": course.end_date.strftime('%Y-%m-%d') if course and course.end_date else None,
+        "completion_date": certificate.completion_date.strftime('%Y-%m-%d') if certificate.completion_date else None,
+        "grade": certificate.grade,
+        "instructor_name": certificate.instructor_name,
+        "status": certificate.status or "Verified"
+    })

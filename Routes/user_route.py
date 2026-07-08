@@ -1224,3 +1224,4 @@ def check_user_enrollment(current_user, course_id):
         return jsonify({
             "enrolled": False
         }), 200
+    

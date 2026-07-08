@@ -682,3 +682,32 @@ class Subscriber(db.Model):
         db.DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc)
     )
+    
+# certificates table
+class Certificate(db.Model):
+    __tablename__ = "certificates"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    student_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"))
+    course_id = db.Column(db.Integer, db.ForeignKey("courses.id", ondelete="CASCADE"))
+    course_code = db.Column(db.String(20), nullable=False)
+    duration_months = db.Column(db.Integer, nullable=True)
+    completion_date = db.Column(db.Date, nullable=True)
+    grade = db.Column(db.String(10), nullable=True)
+    project_title = db.Column(db.String(200), nullable=True)
+    description = db.Column(db.Text, nullable=True)
+    instructor_name = db.Column(db.String(100), nullable=True)
+    certificate_number = db.Column(db.String(50), unique=True, nullable=False)
+    
+
+    verification_token = db.Column(db.String(100), unique=True, nullable=False)
+    status = db.Column(db.String(20), default="verified")  # verified | revoked | expired
+
+    issued_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc)
+    )
+
+    student = db.relationship("User", backref=db.backref("certificates", lazy=True, cascade="all, delete-orphan"))
+    course = db.relationship("Course", backref=db.backref("certificates", lazy=True, cascade="all, delete-orphan"))
