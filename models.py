@@ -366,6 +366,7 @@ class Assignment(db.Model):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc)
     )
+    order_index = db.Column(db.Integer, default=0)
 
     course = db.relationship("Course", backref=db.backref("assignments", lazy=True, cascade="all, delete-orphan"))
     week = db.relationship("Week", backref=db.backref("assignments", lazy=True, cascade="all, delete-orphan"))

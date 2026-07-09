@@ -897,6 +897,7 @@ def create_assignment(current_user, week_id):
         week_id=week_id,
         title=data['title'],
         description=data.get('description', ''),
+        order_index=data.get('order_index', 0),
         total_points=data.get('total_points', 0),
         due_date=datetime.fromisoformat(data['due_date']) if data.get('due_date') else None
     )
@@ -945,7 +946,8 @@ def update_assignment(current_user, assignment_id):
     assignment.description = data.get('description', assignment.description)
     assignment.due_date = datetime.fromisoformat(data['due_date']) if data.get('due_date') else assignment.due_date
     assignment.total_points = data.get('total_points', assignment.total_points)
-    
+    assignment.order_index = data.get('order_index', assignment.order_index)
+
     db.session.commit()
     
     return jsonify({"message": "Assignment updated successfully"}), 200
