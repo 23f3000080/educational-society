@@ -3,7 +3,7 @@
 from flask import Blueprint, request, jsonify
 from flask_cors import cross_origin
 from datetime import datetime
-from models import db, Assignment, Question, QuestionOption, FillBlankAnswer, Course, Week, AssignmentSubmission
+from models import db, Assignment, Question, QuestionOption, FillBlankAnswer, Course, Week, AssignmentSubmission, StudentAnswer, User
 from Routes.base_route import token_required, roles_required
 
 admin_assignment_bp = Blueprint('admin_assignment', __name__)
@@ -538,30 +538,7 @@ def get_assignment_stats(current_user, assignment_id):
 @token_required
 @roles_required("admin")
 def get_assignment_submissions(current_user, assignment_id):
-    """Get all submissions for an assignment"""
-    assignment = Assignment.query.get_or_404(assignment_id)
-    
-    from models import AssignmentSubmission, User
-    
-    submissions = AssignmentSubmission.query.filter_by(assignment_id=assignment_id).order_by(
-        AssignmentSubmission.submitted_at.desc()
-    ).all()
-    
-    result = []
-    for sub in submissions:
-        student = User.query.get(sub.student_id)
-        result.append({
-            "id": sub.id,
-            "student_id": sub.student_id,
-            "student_name": f"{student.first_name} {student.last_name}" if student else "Unknown",
-            "student_email": student.email if student else None,
-            "submitted_at": sub.submitted_at.isoformat() if sub.submitted_at else None,
-            "score": sub.score,
-            "is_graded": sub.is_graded,
-            "graded_at": sub.graded_at.isoformat() if sub.graded_at else None
-        })
-    
-    return jsonify(result), 200
+    return _build_assignment_submissions_payload(assignment_id)
 
 
 # Helper function to update assignment total points
@@ -645,3 +622,492 @@ def clone_assignment(current_user, assignment_id):
         "new_assignment_id": new_assignment.id,
         "new_assignment_title": new_assignment.title
     }), 201
+    
+# -------------------------
+# GET ASSIGNMENT SUBMISSIONS WITH ANSWERS
+# -------------------------
+
+
+def _build_assignment_submissions_payload(assignment_id):
+    """Build the admin submissions payload with per-question answers."""
+    assignment = Assignment.query.get_or_404(assignment_id)
+
+    submissions = AssignmentSubmission.query.filter_by(
+        assignment_id=assignment_id
+    ).order_by(
+        AssignmentSubmission.submitted_at.desc(),
+        AssignmentSubmission.id.desc()
+    ).all()
+
+    questions = Question.query.filter_by(
+        assignment_id=assignment_id
+    ).order_by(Question.order_index, Question.id).all()
+
+    result = []
+
+    for submission in submissions:
+        student = User.query.get(submission.student_id)
+        student_id = student.id if student else submission.student_id
+        student_name = "Unknown"
+        student_email = None
+
+        if student:
+            name_parts = [student.first_name, student.last_name]
+            student_name = " ".join(part for part in name_parts if part).strip() or "Unknown"
+            student_email = student.email
+
+        questions_data = []
+        total_marks = 0
+        obtained_marks = 0
+
+        for question in questions:
+            student_answer = StudentAnswer.query.filter_by(
+                student_id=student_id,
+                question_id=question.id
+            ).order_by(StudentAnswer.created_at.desc(), StudentAnswer.id.desc()).first()
+
+            correct_answer = None
+            if question.question_type in ['mcq', 'multiple_select']:
+                options = QuestionOption.query.filter_by(question_id=question.id).all()
+                correct_options = [opt for opt in options if opt.is_correct]
+                correct_answer = [opt.id for opt in correct_options]
+            elif question.question_type == 'fill_blank':
+                blank_answers = FillBlankAnswer.query.filter_by(question_id=question.id).all()
+                correct_answer = [ans.correct_answer for ans in blank_answers]
+
+            student_selected = None
+            if student_answer:
+                if question.question_type == 'mcq':
+                    student_selected = [student_answer.selected_option_id] if student_answer.selected_option_id else []
+                elif question.question_type == 'multiple_select':
+                    student_selected = [student_answer.selected_option_id] if student_answer.selected_option_id else []
+                elif question.question_type == 'fill_blank':
+                    student_selected = [student_answer.text_answer] if student_answer.text_answer else []
+
+            marks_obtained = float(student_answer.marks_obtained) if student_answer and student_answer.marks_obtained is not None else 0
+            if student_answer and student_answer.selected_option_id:
+                option = QuestionOption.query.get(student_answer.selected_option_id)
+                if option and option.is_correct:
+                    marks_obtained = question.marks
+            elif student_answer and student_answer.text_answer:
+                blank_answers = FillBlankAnswer.query.filter_by(question_id=question.id).all()
+                for answer in blank_answers:
+                    if answer.correct_answer and answer.correct_answer.lower().strip() == student_answer.text_answer.lower().strip():
+                        marks_obtained = question.marks
+                        break
+
+            total_marks += question.marks
+            obtained_marks += marks_obtained
+
+            questions_data.append({
+                'question_id': question.id,
+                'question_text': question.question_text,
+                'question_type': question.question_type,
+                'marks': question.marks,
+                'correct_answer': correct_answer,
+                'student_answer': student_selected,
+                'marks_obtained': marks_obtained,
+                'is_correct': marks_obtained == question.marks if marks_obtained > 0 else False
+            })
+
+        result.append({
+            'submission_id': submission.id,
+            'student_id': student_id,
+            'student_name': student_name,
+            'student_email': student_email,
+            'submitted_at': submission.submitted_at.isoformat() if submission.submitted_at else None,
+            'total_marks': total_marks,
+            'obtained_marks': obtained_marks,
+            'percentage': (obtained_marks / total_marks * 100) if total_marks > 0 else 0,
+            'questions': questions_data,
+            'score': submission.score,
+            'is_graded': submission.is_graded,
+            'graded_at': submission.graded_at.isoformat() if submission.graded_at else None
+        })
+
+    return jsonify({
+        'success': True,
+        'assignment_id': assignment_id,
+        'assignment_title': assignment.title,
+        'submissions': result
+    }), 200
+
+@admin_assignment_bp.route('/<int:assignment_id>/submissions', methods=['GET'])
+@token_required
+@roles_required('admin')
+def get_assignment_submissions_with_answers(assignment_id):
+    """
+    Fetch all student submissions for an assignment with their answers
+    Returns: student info, answers for each question, correct answers, marks obtained
+    """
+    try:
+        return _build_assignment_submissions_payload(assignment_id)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# -------------------------
+# UPDATE STUDENT ANSWER SCORE
+# -------------------------
+
+@admin_assignment_bp.route('/<int:assignment_id>/submissions/<int:submission_id>/question/<int:question_id>', methods=['PUT'])
+@token_required
+def update_question_score(current_user, assignment_id, submission_id, question_id):
+    """
+    Admin can edit score and mark answer correct/incorrect
+    """
+    try:
+        data = request.get_json()
+        marks_obtained = data.get('marks_obtained')
+        is_correct = data.get('is_correct')
+        selected_option_id = data.get('selected_option_id')
+        text_answer = data.get('text_answer')
+        
+        # Validate input
+        if marks_obtained is None:
+            return jsonify({'success': False, 'error': 'Marks obtained is required'}), 400
+        
+        # Find the submission
+        submission = AssignmentSubmission.query.get_or_404(submission_id)
+        
+        # Find the question
+        question = Question.query.get_or_404(question_id)
+        
+        # Find or create student answer
+        student_answer = StudentAnswer.query.filter_by(
+            student_id=submission.student_id,
+            question_id=question_id
+        ).first()
+        
+        if not student_answer:
+            student_answer = StudentAnswer(
+                student_id=submission.student_id,
+                question_id=question_id
+            )
+            db.session.add(student_answer)
+        
+        # Update based on question type
+        if question.question_type in ['mcq', 'multiple_select']:
+            if selected_option_id:
+                student_answer.selected_option_id = selected_option_id
+        elif question.question_type == 'fill_blank':
+            if text_answer:
+                student_answer.text_answer = text_answer
+
+        student_answer.marks_obtained = float(marks_obtained)
+
+        assignment_questions = Question.query.filter_by(assignment_id=assignment_id).all()
+        total_marks = 0.0
+        obtained_marks = 0.0
+
+        for assignment_question in assignment_questions:
+            total_marks += assignment_question.marks or 0
+            answer = StudentAnswer.query.filter_by(
+                student_id=submission.student_id,
+                question_id=assignment_question.id
+            ).first()
+
+            if answer and answer.marks_obtained is not None:
+                obtained_marks += float(answer.marks_obtained)
+            elif answer and answer.selected_option_id:
+                option = QuestionOption.query.get(answer.selected_option_id)
+                if option and option.is_correct:
+                    obtained_marks += assignment_question.marks or 0
+            elif answer and answer.text_answer:
+                blank_answers = FillBlankAnswer.query.filter_by(question_id=assignment_question.id).all()
+                for blank in blank_answers:
+                    if blank.correct_answer and blank.correct_answer.lower().strip() == answer.text_answer.lower().strip():
+                        obtained_marks += assignment_question.marks or 0
+                        break
+
+        submission.score = obtained_marks
+        submission.total_possible = total_marks
+        submission.percentage = (obtained_marks / total_marks * 100) if total_marks > 0 else 0
+        submission.is_graded = True
+        submission.graded_at = datetime.utcnow()
+        submission.graded_by = current_user.id
+        
+        # You might want to store marks in a separate table
+        # For now, we'll assume marks are stored in a mark field
+        # Add a marks_obtained field to StudentAnswer or create a separate table
+        
+        # If you have a marks field in StudentAnswer
+        # student_answer.marks_obtained = marks_obtained
+        
+        db.session.commit()
+        
+        # Recalculate total marks for this student
+        total_marks = calculate_student_total_marks(submission.student_id, assignment_id)
+        
+        return jsonify({
+            'success': True,
+            'message': 'Question score updated successfully',
+            'student_id': submission.student_id,
+            'question_id': question_id,
+            'marks_obtained': marks_obtained,
+            'total_marks': total_marks,
+            'submission_score': submission.score,
+            'percentage': submission.percentage,
+            'is_graded': submission.is_graded,
+            'graded_at': submission.graded_at.isoformat() if submission.graded_at else None
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# -------------------------
+# BULK UPDATE SUBMISSION GRADES
+# -------------------------
+
+@admin_assignment_bp.route('/<int:assignment_id>/submissions/bulk-update', methods=['PUT'])
+@token_required
+def bulk_update_submissions(current_user, assignment_id):
+    """
+    Bulk update scores for all questions in a submission
+    """
+    try:
+        data = request.get_json()
+        submission_id = data.get('submission_id')
+        question_scores = data.get('question_scores', [])
+        
+        submission = AssignmentSubmission.query.get_or_404(submission_id)
+        
+        for score_data in question_scores:
+            question_id = score_data.get('question_id')
+            marks_obtained = score_data.get('marks_obtained')
+            
+            student_answer = StudentAnswer.query.filter_by(
+                student_id=submission.student_id,
+                question_id=question_id
+            ).first()
+            
+            if student_answer:
+                student_answer.marks_obtained = float(marks_obtained or 0)
+        
+        db.session.commit()
+        
+        assignment_questions = Question.query.filter_by(assignment_id=assignment_id).all()
+        total_marks = sum(question.marks or 0 for question in assignment_questions)
+        obtained_marks = calculate_student_total_marks(submission.student_id, assignment_id)
+
+        submission.score = obtained_marks
+        submission.total_possible = total_marks
+        submission.percentage = (obtained_marks / total_marks * 100) if total_marks > 0 else 0
+        submission.is_graded = True
+        submission.graded_at = datetime.utcnow()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Bulk update completed',
+            'total_marks': total_marks,
+            'submission_score': obtained_marks,
+            'percentage': submission.percentage,
+            'is_graded': submission.is_graded
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# -------------------------
+# HELPER FUNCTION
+# -------------------------
+
+def calculate_student_total_marks(student_id, assignment_id):
+    """Calculate total marks obtained by a student for an assignment"""
+    student_answers = StudentAnswer.query.filter_by(student_id=student_id).all()
+    total_marks = 0
+    
+    for answer in student_answers:
+        question = Question.query.get(answer.question_id)
+        if question and question.assignment_id == assignment_id:
+            if answer.marks_obtained is not None:
+                total_marks += float(answer.marks_obtained)
+            elif answer.selected_option_id:
+                option = QuestionOption.query.get(answer.selected_option_id)
+                if option and option.is_correct:
+                    total_marks += question.marks
+            elif answer.text_answer:
+                blank_answers = FillBlankAnswer.query.filter_by(question_id=question.id).all()
+                for blank in blank_answers:
+                    if blank.correct_answer.lower().strip() == answer.text_answer.lower().strip():
+                        total_marks += question.marks
+                        break
+    
+    return total_marks
+
+# -------------------------
+# GET SUBMISSION DETAIL FOR A SPECIFIC STUDENT
+# -------------------------
+
+@admin_assignment_bp.route('/<int:assignment_id>/student/<int:student_id>/submission', methods=['GET'])
+@token_required
+def get_student_submission(assignment_id, student_id):
+    """
+    Get a specific student's submission for an assignment
+    """
+    try:
+        submission = AssignmentSubmission.query.filter_by(
+            assignment_id=assignment_id,
+            student_id=student_id
+        ).first_or_404()
+        
+        questions = Question.query.filter_by(assignment_id=assignment_id).all()
+        
+        questions_data = []
+        total_marks = 0
+        obtained_marks = 0
+        
+        for question in questions:
+            student_answer = StudentAnswer.query.filter_by(
+                student_id=student_id,
+                question_id=question.id
+            ).first()
+            
+            # Similar logic as above
+            correct_answer = None
+            student_selected = None
+            marks_obtained = 0
+            
+            if question.question_type == 'mcq':
+                options = QuestionOption.query.filter_by(question_id=question.id).all()
+                correct_options = [opt for opt in options if opt.is_correct]
+                correct_answer = [opt.id for opt in correct_options]
+                
+                if student_answer and student_answer.selected_option_id:
+                    student_selected = [student_answer.selected_option_id]
+                    option = QuestionOption.query.get(student_answer.selected_option_id)
+                    if option and option.is_correct:
+                        marks_obtained = question.marks
+                        
+            elif question.question_type == 'fill_blank':
+                blank_answers = FillBlankAnswer.query.filter_by(question_id=question.id).all()
+                correct_answer = [ans.correct_answer for ans in blank_answers]
+                
+                if student_answer and student_answer.text_answer:
+                    student_selected = [student_answer.text_answer]
+                    for blank in blank_answers:
+                        if blank.correct_answer.lower().strip() == student_answer.text_answer.lower().strip():
+                            marks_obtained = question.marks
+                            break
+            
+            total_marks += question.marks
+            obtained_marks += marks_obtained
+            
+            questions_data.append({
+                'question_id': question.id,
+                'question_text': question.question_text,
+                'question_type': question.question_type,
+                'marks': question.marks,
+                'correct_answer': correct_answer,
+                'student_answer': student_selected,
+                'marks_obtained': marks_obtained,
+                'is_correct': marks_obtained == question.marks if marks_obtained > 0 else False
+            })
+        
+        return jsonify({
+            'success': True,
+            'student_id': student_id,
+            'submission_id': submission.id,
+            'submitted_at': submission.submitted_at.isoformat(),
+            'total_marks': total_marks,
+            'obtained_marks': obtained_marks,
+            'percentage': (obtained_marks / total_marks * 100) if total_marks > 0 else 0,
+            'questions': questions_data
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# -------------------------
+# EXPORT SUBMISSIONS AS CSV
+# -------------------------
+
+@admin_assignment_bp.route('/<int:assignment_id>/submissions/export', methods=['GET'])
+@token_required
+def export_submissions_csv(assignment_id):
+    """
+    Export all submissions as CSV
+    """
+    try:
+        import csv
+        from io import StringIO
+        
+        assignment = Assignment.query.get_or_404(assignment_id)
+        submissions = AssignmentSubmission.query.filter_by(assignment_id=assignment_id).all()
+        
+        # Create CSV
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        # Write header
+        header = ['Student ID', 'Student Name', 'Student Email', 'Submitted At', 'Total Marks', 'Obtained Marks', 'Percentage']
+        
+        # Get all questions for columns
+        questions = Question.query.filter_by(assignment_id=assignment_id).order_by(Question.order_index).all()
+        for q in questions:
+            header.append(f'Q{q.order_index+1} (Marks)')
+            header.append(f'Q{q.order_index+1} (Correct)')
+        
+        writer.writerow(header)
+        
+        # Write data for each submission
+        for submission in submissions:
+            student = User.query.get(submission.student_id)
+            row = [
+                student.id,
+                f"{student.first_name} {student.last_name or ''}",
+                student.email,
+                submission.submitted_at.strftime('%Y-%m-%d %H:%M:%S'),
+            ]
+            
+            # Calculate marks and add question details
+            total_marks = 0
+            obtained_marks = 0
+            
+            for question in questions:
+                student_answer = StudentAnswer.query.filter_by(
+                    student_id=student.id,
+                    question_id=question.id
+                ).first()
+                
+                marks = 0
+                is_correct = 'No'
+                
+                if student_answer:
+                    if question.question_type == 'mcq':
+                        option = QuestionOption.query.get(student_answer.selected_option_id)
+                        if option and option.is_correct:
+                            marks = question.marks
+                            is_correct = 'Yes'
+                    elif question.question_type == 'fill_blank':
+                        blank_answers = FillBlankAnswer.query.filter_by(question_id=question.id).all()
+                        for blank in blank_answers:
+                            if blank.correct_answer.lower().strip() == student_answer.text_answer.lower().strip():
+                                marks = question.marks
+                                is_correct = 'Yes'
+                                break
+                
+                total_marks += question.marks
+                obtained_marks += marks
+                row.extend([marks, is_correct])
+            
+            row.extend([
+                total_marks,
+                obtained_marks,
+                f"{(obtained_marks/total_marks*100):.2f}%" if total_marks > 0 else '0%'
+            ])
+            
+            writer.writerow(row)
+        
+        # Create response
+        response = jsonify({
+            'success': True,
+            'csv_data': output.getvalue(),
+            'filename': f"assignment_{assignment_id}_submissions.csv"
+        })
+        
+        return response, 200
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500

@@ -591,6 +591,8 @@ class StudentAnswer(db.Model):
 
     text_answer = db.Column(db.String(500))
 
+    marks_obtained = db.Column(db.Float, default=0.0)
+
     created_at = db.Column(
         db.DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc)
@@ -616,9 +618,21 @@ class AssignmentSubmission(db.Model):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc)
     )
+    
+    score = db.Column(db.Float, default=0.0)
+    total_possible = db.Column(db.Float, default=0.0)
+    percentage = db.Column(db.Float, default=0.0)
+    is_graded = db.Column(db.Boolean, default=False)
+    graded_at = db.Column(db.DateTime(timezone=True))
+    graded_by = db.Column(db.Integer, db.ForeignKey("users.id"))
 
     assignment = db.relationship("Assignment", backref=db.backref("submissions", lazy=True, cascade="all, delete-orphan"))
-    student = db.relationship("User")
+    
+    # FIX: Explicitly add the foreign key constraint here as well
+    student = db.relationship("User", foreign_keys=[student_id])
+    
+    grader = db.relationship("User", foreign_keys=[graded_by])
+
 
 
 # -------------------------
