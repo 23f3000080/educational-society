@@ -651,11 +651,15 @@ def get_course_weeks(current_user, course_id):
         
         # Get assignments
         for assignment in week.assignments:
+            if not assignment.active_status:
+                continue
+
             week_data["assignments"].append({
                 "id": assignment.id,
                 "title": assignment.title,
                 "description": assignment.description,
                 "due_date": assignment.due_date.isoformat() if assignment.due_date else None,
+                "active_status": assignment.active_status,
                 # "total_points": assignment.total_points
             })
         
@@ -678,6 +682,9 @@ def get_course_weeks(current_user, course_id):
 def get_assignment_questions(current_user, assignment_id):
     """Get all questions for an assignment"""
     assignment = Assignment.query.get_or_404(assignment_id)
+
+    if not assignment.active_status:
+        return jsonify({"error": "Assignment is not active"}), 404
     
     # Check enrollment in the course
     enrollment = Enrollment.query.filter_by(
