@@ -1058,7 +1058,10 @@ def get_full_course_data(current_user, course_id):
         "description": course.description,
         "duration_months": course.duration_months,
         "class_level": course.class_level,
-        "picture": course.picture
+        "picture": course.picture,
+        "start_date": course.start_date.isoformat() if course.start_date else None,
+        "end_date": course.end_date.isoformat() if course.end_date else None,
+        "is_active": course.is_active,
     }
 
     # ---------------------------
@@ -1074,6 +1077,7 @@ def get_full_course_data(current_user, course_id):
             "id": week.id,
             "week_number": week.week_number,
             "title": week.title,
+            "active_status": week.active_status,
             "videos": [],
             "assignments": [],
             "notes": []
@@ -1085,7 +1089,8 @@ def get_full_course_data(current_user, course_id):
                 "id": video.id,
                 "title": video.title,
                 "url": video.url,
-                "duration": video.duration
+                "duration": video.duration,
+                "active_status": video.active_status
             })
             total_items += 1
 
@@ -1095,7 +1100,8 @@ def get_full_course_data(current_user, course_id):
                 "id": assignment.id,
                 "title": assignment.title,
                 "description": assignment.description,
-                "due_date": assignment.due_date.isoformat() if assignment.due_date else None
+                "due_date": assignment.due_date.isoformat() if assignment.due_date else None,
+                "active_status": assignment.active_status
             })
             total_items += 1
 
@@ -1105,7 +1111,8 @@ def get_full_course_data(current_user, course_id):
                 "id": note.id,
                 "title": note.title,
                 "file_url": note.file_url,
-                "description": note.description
+                "description": note.description,
+                "active_status": note.active_status
             })
             total_items += 1
 

@@ -280,6 +280,7 @@ class Week(db.Model):
 
     title = db.Column(db.String(200))
     description = db.Column(db.Text, nullable=True)
+    active_status = db.Column(db.Boolean, default=True)
 
     created_at = db.Column(
         db.DateTime(timezone=True),
@@ -305,6 +306,7 @@ class Video(db.Model):
     duration = db.Column(db.Integer)
 
     order_index = db.Column(db.Integer, default=0)
+    active_status = db.Column(db.Boolean, default=True)
 
     created_at = db.Column(
         db.DateTime(timezone=True),
@@ -328,7 +330,7 @@ class Note(db.Model):
     description = db.Column(db.Text)
 
     order_index = db.Column(db.Integer, default=0)
-
+    active_status = db.Column(db.Boolean, default=True)
     created_at = db.Column(
         db.DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc)
@@ -355,6 +357,7 @@ class Assignment(db.Model):
 
     due_date = db.Column(db.DateTime)
     total_points = db.Column(db.Integer)
+    active_status = db.Column(db.Boolean, default=True)
 
     created_at = db.Column(
         db.DateTime(timezone=True),
