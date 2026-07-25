@@ -1108,7 +1108,8 @@ def get_full_course_data(current_user, course_id):
                 "title": assignment.title,
                 "description": assignment.description,
                 "due_date": assignment.due_date.isoformat() if assignment.due_date else None,
-                "active_status": assignment.active_status
+                "active_status": assignment.active_status,
+                "total_points": assignment.total_points
             })
             total_items += 1
 
