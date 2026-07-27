@@ -676,6 +676,44 @@ def get_course_weeks(current_user, course_id):
     
     return jsonify(result)
 
+# get 
+@user_bp.route("/api/assignments", methods=["GET"])
+@token_required
+@roles_required("user")
+def get_assignments_for_user_dashboard(current_user):
+    """Get all assignments for the user dashboard"""
+    # Get all active assignments for courses the user is enrolled in
+    enrolled_course_ids = db.session.query(Enrollment.course_id).filter_by(
+        student_id=current_user.id,
+        enrollment_status='active'
+    ).subquery()
+
+    assignments = Assignment.query.filter(
+        Assignment.course_id.in_(enrolled_course_ids),
+        Assignment.active_status == True
+    ).order_by(Assignment.due_date.desc()).all()
+
+    result = []
+    for assignment in assignments:
+        result.append({
+            "id": assignment.id,
+            "title": assignment.title,
+            "description": assignment.description,
+            "due_date": assignment.due_date.isoformat() if assignment.due_date else None,
+            "course_id": assignment.course_id,
+            "course_title": assignment.course.title if assignment.course else None,
+            # submission status for this user
+            "submitted": AssignmentSubmission.query.filter_by(
+                assignment_id=assignment.id,
+                student_id=current_user.id
+            ).first() is not None,
+            # week number and title
+            "week_number": assignment.week.week_number if assignment.week else None,
+            'week_title': assignment.week.title if assignment.week else None
+        })
+
+    return jsonify(result), 200
+
 @user_bp.route("/api/assignments/<int:assignment_id>/questions", methods=["GET"])
 @token_required
 @roles_required("user")
