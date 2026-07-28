@@ -1,35 +1,33 @@
 from sqlalchemy import func
-
+import re
 from models import *
 from datetime import datetime, timezone, timedelta
 from flask import Blueprint, redirect, request, jsonify, current_app
 from Routes.base_route import token_required, roles_required
 from sqlalchemy.orm import aliased
 from zoneinfo import ZoneInfo
-import razorpay
 from dotenv import load_dotenv
 import os
 from flask_security.utils import hash_password, verify_password
 from communication.email_sender import send_course_enrollment_email
 
+import base64
+import hashlib
+import hmac
 import requests
-from cashfree_pg.api_client import Cashfree
-from cashfree_pg.models.create_order_request import CreateOrderRequest
-from cashfree_pg.models.customer_details import CustomerDetails
-from cashfree_pg.models.order_meta import OrderMeta
 
 load_dotenv()
 
 user_bp = Blueprint("user", __name__)
 
-RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
-RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
-
-razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
-
 CASHFREE_APP_ID = os.getenv("CASHFREE_APP_ID")
 CASHFREE_SECRET_KEY = os.getenv("CASHFREE_SECRET_KEY")
-CASHFREE_API_URL = os.getenv("CASHFREE_API_URL", "https://api.cashfree.com/pg")
+CASHFREE_ENVIRONMENT = os.getenv("CASHFREE_ENVIRONMENT", "production").lower()
+CASHFREE_API_URL = os.getenv(
+    "CASHFREE_API_URL",
+    "https://sandbox.cashfree.com/pg" if CASHFREE_ENVIRONMENT == "sandbox" else "https://api.cashfree.com/pg",
+).rstrip("/")
+CASHFREE_API_VERSION = os.getenv("CASHFREE_API_VERSION", "2022-09-01")
 
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -567,16 +565,87 @@ def fetch_course_details(current_user, course_id):
 
 
 
+def _cashfree_headers():
+    return {
+        "x-api-version": CASHFREE_API_VERSION,
+        "x-client-id": CASHFREE_APP_ID or "",
+        "x-client-secret": CASHFREE_SECRET_KEY or "",
+        "Content-Type": "application/json",
+    }
+
+
+def _order_owner_and_course(order_id):
+    match = re.fullmatch(r"order_(\d+)_(\d+)_(\d+)", order_id or "")
+    return (int(match.group(1)), int(match.group(2))) if match else (None, None)
+
+
+def _cashfree_order(order_id):
+    response = requests.get(
+        f"{CASHFREE_API_URL}/orders/{order_id}", headers=_cashfree_headers(), timeout=15
+    )
+    if not response.ok:
+        current_app.logger.warning("Cashfree order lookup failed for %s: %s", order_id, response.text)
+        return None
+    return response.json()
+
+
+def _activate_paid_enrollment(order_id, expected_user_id=None):
+    """Verify Cashfree's order record and activate the course exactly once."""
+    user_id, course_id = _order_owner_and_course(order_id)
+    if not user_id or not course_id or (expected_user_id and user_id != expected_user_id):
+        return None, "Invalid order", 400
+
+    order = _cashfree_order(order_id)
+    if not order:
+        return None, "Unable to verify payment with Cashfree", 502
+    if order.get("order_status") != "PAID":
+        return None, order.get("order_status", "PENDING"), 200
+
+    course, user = Course.query.get(course_id), User.query.get(user_id)
+    if not course or not user:
+        return None, "Order references an unavailable course or user", 404
+    if float(order.get("order_amount", -1)) != float(course.fee):
+        current_app.logger.error("Cashfree amount mismatch for order %s", order_id)
+        return None, "Payment amount does not match this course", 400
+
+    enrollment = Enrollment.query.filter_by(student_id=user_id, course_id=course_id).first()
+    if enrollment:
+        return enrollment, None, 200
+
+    payment_id = order_id
+    payments_response = requests.get(
+        f"{CASHFREE_API_URL}/orders/{order_id}/payments", headers=_cashfree_headers(), timeout=15
+    )
+    if payments_response.ok:
+        successful = next((p for p in payments_response.json() if p.get("payment_status") == "SUCCESS"), None)
+        if successful:
+            payment_id = str(successful.get("cf_payment_id") or order_id)
+
+    enrollment = Enrollment(student_id=user_id, course_id=course_id, payment_id=payment_id,
+                            payment_status="paid", enrollment_status="active")
+    db.session.add(enrollment)
+    db.session.commit()
+    try:
+        student_name = " ".join(filter(None, [user.first_name, user.last_name])) or "Student"
+        send_course_enrollment_email(user.email, student_name, course.title, to_ist(enrollment.enrollment_date))
+    except Exception as error:
+        current_app.logger.warning("Enrollment email failed for user_id=%s: %s", user.id, error)
+    return enrollment, None, 200
+
+
 @user_bp.route("/api/create-payment", methods=["POST"])
 @token_required
 @roles_required("user")
 def create_payment(current_user):
-    data = request.json
+    data = request.get_json(silent=True) or {}
     course_id = data.get("course_id")
+    fullName = data.get("full_name")
+    email = data.get("email")
+    phone = data.get("phone")
 
     course = Course.query.get(course_id)
 
-    if not course:
+    if not course or not course.is_active:
         return jsonify({"error": "Course not found"}), 404
     
     existing = Enrollment.query.filter_by(
@@ -587,8 +656,18 @@ def create_payment(current_user):
     if existing:
         return jsonify({"error": "You are already enrolled in this course"}), 400
 
+    if not CASHFREE_APP_ID or not CASHFREE_SECRET_KEY:
+        current_app.logger.error("Cashfree credentials are not configured")
+        return jsonify({"error": "Payments are temporarily unavailable"}), 503
+
+    customer_phone = re.sub(r"\D", "", str(phone or current_user.mobile_no or ""))
+    if customer_phone.startswith("91") and len(customer_phone) == 12:
+        customer_phone = customer_phone[2:]
+    if len(customer_phone) != 10:
+        return jsonify({"error": "Enter a valid 10-digit phone number"}), 400
+
     # Generate unique order ID
-    order_id = f"order_{current_user.id}_{course_id}_{int(datetime.now().timestamp())}"
+    order_id = f"order_{current_user.id}_{course_id}_{int(datetime.now(timezone.utc).timestamp())}"
     amount = float(course.fee)
     
     # Create Cashfree order
@@ -601,61 +680,215 @@ def create_payment(current_user):
             "order_currency": "INR",
             "customer_details": {
                 "customer_id": str(current_user.id),
-                "customer_email": current_user.email,
-                "customer_phone": current_user.mobile_no or "9999999999"
+                "customer_email": email or current_user.email,
+                "customer_phone": customer_phone,
+                "customer_name": fullName or None,
             },
             "order_meta": {
-                "return_url": f"{request.host_url}api/payment-callback"
+                "return_url": f"{request.host_url}api/payment-callback?order_id={{order_id}}"
             },
-            "order_expiry_time": (datetime.now() + timedelta(minutes=15)).isoformat() + "Z"
+            "order_expiry_time": (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
         }
-        
-        headers = {
-            "x-api-version": "2022-09-01",
-            "x-client-id": CASHFREE_APP_ID,
-            "x-client-secret": CASHFREE_SECRET_KEY,
-            "Content-Type": "application/json"
-        }
-        
-        response = requests.post(url, json=payload, headers=headers)
-        response_data = response.json()
-        
-        print("Cashfree Create Order Response:", response_data)  # Debug log
-        
-        if response.status_code == 200:
+        response = requests.post(url, json=payload, headers=_cashfree_headers(), timeout=15)
+        response_data = response.json() if response.content else {}
+        if response.ok and response_data.get("payment_session_id"):
             return jsonify({
                 "payment_session_id": response_data["payment_session_id"],
                 "order_id": response_data["order_id"],
-                "amount": int(amount * 100),
-                "key": CASHFREE_APP_ID,
-                "course_id": course.id
+                "course_id": course.id,
+                "environment": "sandbox" if CASHFREE_ENVIRONMENT == "sandbox" else "production",
             })
         else:
             error_msg = response_data.get('message', 'Unknown error')
-            return jsonify({"error": f"Payment creation failed: {error_msg}"}), 500
+            current_app.logger.warning("Cashfree order creation failed: %s", response.text)
+            return jsonify({"error": f"Payment creation failed: {error_msg}"}), 502
             
-    except Exception as e:
-        print("Create Payment Error:", str(e))  # Debug log
-        return jsonify({"error": f"Payment creation failed: {str(e)}"}), 500
+    except requests.RequestException:
+        current_app.logger.exception("Cashfree order creation failed")
+        return jsonify({"error": "Could not reach the payment gateway. Please try again."}), 502
+    
+@user_bp.route("/api/payment-callback", methods=["GET"])
+def payment_callback():
+    """Cashfree return URL; the authenticated frontend verifies the order server-side."""
+    order_id = request.args.get("order_id")
+    _, course_id = _order_owner_and_course(order_id)
+    frontend_url = os.getenv("FRONTEND_URL", "https://educational-society.vercel.app/").rstrip("/")
+    return redirect(f"{frontend_url}/payment-status?order_id={order_id or ''}&course_id={course_id or ''}")
+
+    """Legacy callback implementation retained below temporarily."""
+    order_id = request.args.get("order_id")
+    payment_status = request.args.get("payment_status")
+    payment_session_id = request.args.get("payment_session_id")
+    
+    print(f"Payment Callback: order_id={order_id}, status={payment_status}, session={payment_session_id}")
+    
+    # If we don't have order_id, try to get it from session
+    if not order_id and payment_session_id:
+        try:
+            url = f"{CASHFREE_API_URL}/orders/sessions/{payment_session_id}"
+            headers = {
+                "x-api-version": "2022-09-01",
+                "x-client-id": CASHFREE_APP_ID,
+                "x-client-secret": CASHFREE_SECRET_KEY
+            }
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                order_data = response.json()
+                order_id = order_data.get("order_id")
+        except Exception as e:
+            print(f"Error fetching order from session: {e}")
+    
+    # Get course_id from order_id
+    course_id = None
+    user_id = None
+    if order_id and order_id.startswith("order_"):
+        try:
+            parts = order_id.split('_')
+            if len(parts) >= 3:
+                user_id = parts[1]
+                course_id = parts[2]
+        except Exception as e:
+            print(f"Error parsing order_id: {e}")
+    
+    # If payment was successful, create enrollment
+    if payment_status == "SUCCESS" and order_id and course_id and user_id:
+        try:
+            user = User.query.get(int(user_id))
+            course = Course.query.get(int(course_id))
+            
+            if user and course:
+                # Check if enrollment already exists
+                existing = Enrollment.query.filter_by(
+                    student_id=user.id,
+                    course_id=course.id
+                ).first()
+                
+                if not existing:
+                    # Create enrollment
+                    enrollment = Enrollment(
+                        student_id=user.id,
+                        course_id=course.id,
+                        payment_id=order_id,
+                        payment_status="paid",
+                        enrollment_status="active"
+                    )
+                    db.session.add(enrollment)
+                    db.session.commit()
+                    
+                    print(f"Enrollment created: {enrollment.id}")
+                    
+                    # Send confirmation email
+                    try:
+                        student_name = " ".join(
+                            filter(None, [user.first_name, user.last_name])
+                        ) or "Student"
+                        
+                        send_course_enrollment_email(
+                            to_email=user.email,
+                            student_name=student_name,
+                            course_title=course.title,
+                            enrollment_date=to_ist(enrollment.enrollment_date) if enrollment.enrollment_date else None,
+                        )
+                        print(f"Enrollment email sent to {user.email}")
+                    except Exception as mail_error:
+                        print(f"Email error: {mail_error}")
+        except Exception as e:
+            print(f"Error creating enrollment: {e}")
+            db.session.rollback()
+    
+    # Redirect to frontend with payment status
+    frontend_url = os.getenv("FRONTEND_URL", "https://educational-society.vercel.app/")
+    redirect_url = f"{frontend_url}payment-status?order_id={order_id}&status={payment_status}&course_id={course_id}"
+    
+    print(f"Redirecting to: {redirect_url}")
+    
+    return redirect(redirect_url)
+
+
+@user_bp.route("/api/verify-payment", methods=["POST"])
+@token_required
+@roles_required("user")
+def verify_payment(current_user):
+    order_id = (request.get_json(silent=True) or {}).get("order_id")
+    try:
+        enrollment, result, status_code = _activate_paid_enrollment(order_id, current_user.id)
+    except requests.RequestException:
+        current_app.logger.exception("Cashfree payment verification failed")
+        return jsonify({"success": False, "error": "Unable to verify payment with Cashfree"}), 502
+
+    if enrollment:
+        return jsonify({"success": True, "status": "PAID", "course_id": enrollment.course_id})
+    if status_code == 200:
+        return jsonify({"success": False, "status": result})
+    return jsonify({"success": False, "error": result}), status_code
 
 
 @user_bp.route("/api/payment-webhook", methods=["POST"])
 def payment_webhook():
     """Cashfree webhook handler for payment status updates"""
+    raw_data = request.get_data(as_text=True)
+    signature = request.headers.get("x-webhook-signature")
+    timestamp = request.headers.get("x-webhook-timestamp")
+    if not CASHFREE_SECRET_KEY or not signature or not timestamp:
+        return jsonify({"error": "Missing webhook signature"}), 401
+
+    expected_signature = base64.b64encode(
+        hmac.new(
+            CASHFREE_SECRET_KEY.encode("utf-8"),
+            f"{timestamp}{raw_data}".encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+    ).decode("utf-8")
+    if not hmac.compare_digest(signature, expected_signature):
+        current_app.logger.warning("Rejected Cashfree webhook with invalid signature")
+        return jsonify({"error": "Invalid signature"}), 401
+
+    data = request.get_json(silent=True) or {}
+    payload = data.get("data", data)
+    order_data = payload.get("order", payload)
+    payment_data = payload.get("payment", payload)
+    order_id = order_data.get("order_id") or data.get("order_id")
+    payment_status = payment_data.get("payment_status") or data.get("payment_status")
+    if payment_status == "SUCCESS" and order_id:
+        try:
+            enrollment, result, status_code = _activate_paid_enrollment(order_id)
+        except requests.RequestException:
+            current_app.logger.exception("Cashfree webhook order verification failed")
+            return jsonify({"error": "Could not verify payment"}), 502
+        if enrollment:
+            return jsonify({"status": "success", "enrollment_id": enrollment.id}), 200
+        return jsonify({"status": result}), status_code
+    return jsonify({"status": "received"}), 200
+
+    """Legacy webhook implementation retained below temporarily."""
     try:
         # Get the raw request body for signature verification
         raw_data = request.get_data(as_text=True)
         data = request.json
         
-        print("Webhook received:", data)  # Debug log
+        print("Webhook received:", data)
         
-        # Verify webhook signature (optional but recommended)
-        # Get signature from headers
+        # Verify webhook signature
         webhook_signature = request.headers.get('x-webhook-signature')
         
-        # TODO: Implement signature verification using your webhook secret
-        # if not verify_webhook_signature(raw_data, webhook_signature):
-        #     return jsonify({"error": "Invalid signature"}), 401
+        # IMPORTANT: Implement signature verification
+        # Get your webhook secret from Cashfree dashboard
+        WEBHOOK_SECRET = os.getenv("CASHFREE_WEBHOOK_SECRET", "your_webhook_secret")
+        
+        # Simple signature verification
+        import hmac
+        import hashlib
+        
+        if webhook_signature and WEBHOOK_SECRET:
+            expected_signature = hmac.new(
+                WEBHOOK_SECRET.encode('utf-8'),
+                raw_data.encode('utf-8'),
+                hashlib.sha256
+            ).hexdigest()
+            
+            if not hmac.compare_digest(webhook_signature, expected_signature):
+                print("Invalid webhook signature")
+                return jsonify({"error": "Invalid signature"}), 401
         
         order_id = data.get("order_id")
         payment_status = data.get("payment_status")
@@ -736,163 +969,6 @@ def payment_webhook():
         print(f"Webhook error: {e}")
         current_app.logger.exception(e)
         return jsonify({"error": str(e)}), 400
-
-
-@user_bp.route("/api/payment-callback", methods=["GET"])
-def payment_callback():
-    """Cashfree payment callback handler"""
-    order_id = request.args.get("order_id")
-    payment_status = request.args.get("payment_status")
-    payment_session_id = request.args.get("payment_session_id")
-    
-    print(f"Payment Callback: order_id={order_id}, status={payment_status}, session={payment_session_id}")
-    
-    # If we don't have order_id, try to get it from session
-    if not order_id and payment_session_id:
-        try:
-            # Fetch order details using payment_session_id
-            url = f"{CASHFREE_API_URL}/orders/sessions/{payment_session_id}"
-            headers = {
-                "x-api-version": "2022-09-01",
-                "x-client-id": CASHFREE_APP_ID,
-                "x-client-secret": CASHFREE_SECRET_KEY
-            }
-            response = requests.get(url, headers=headers)
-            if response.status_code == 200:
-                order_data = response.json()
-                order_id = order_data.get("order_id")
-        except Exception as e:
-            print(f"Error fetching order from session: {e}")
-    
-    # Get course_id from order_id (order_{user_id}_{course_id}_{timestamp})
-    course_id = None
-    if order_id and order_id.startswith("order_"):
-        try:
-            parts = order_id.split('_')
-            if len(parts) >= 3:
-                course_id = parts[2]
-        except Exception as e:
-            print(f"Error parsing order_id: {e}")
-    
-    # Default status if not provided
-    if not payment_status:
-        payment_status = "SUCCESS" if order_id else "UNKNOWN"
-    
-    # Redirect to frontend with payment status
-    frontend_url = os.getenv("FRONTEND_URL", "https://educational-society.vercel.app/")
-    redirect_url = f"{frontend_url}payment-status?order_id={order_id}&status={payment_status}&course_id={course_id}"
-    
-    print(f"Redirecting to: {redirect_url}")
-    
-    return redirect(redirect_url)
-
-
-@user_bp.route("/api/verify-payment", methods=["POST"])
-@token_required
-@roles_required("user")
-def verify_payment(current_user):
-    data = request.json or {}
-
-    order_id = data.get("order_id")
-    course_id = data.get("course_id")
-
-    if not order_id or not course_id:
-        return jsonify({"error": "Missing order_id or course_id"}), 400
-
-    course = Course.query.get(course_id)
-    if not course:
-        return jsonify({"error": "Course not found"}), 404
-
-    # Check if already enrolled
-    existing = Enrollment.query.filter_by(
-        student_id=current_user.id,
-        course_id=course_id
-    ).first()
-
-    if existing:
-        return jsonify({
-            "success": True,
-            "message": "Already enrolled",
-            "already_enrolled": True
-        }), 200
-
-    try:
-        # Fetch payment status from Cashfree
-        url = f"{CASHFREE_API_URL}/orders/{order_id}/payments"
-        
-        headers = {
-            "x-api-version": "2022-09-01",
-            "x-client-id": CASHFREE_APP_ID,
-            "x-client-secret": CASHFREE_SECRET_KEY,
-        }
-        
-        response = requests.get(url, headers=headers)
-        print(f"Cashfree Verify Response: {response.text}")
-        
-        if response.status_code != 200:
-            return jsonify({
-                "error": "Unable to verify payment",
-                "cashfree_response": response.text
-            }), 400
-
-        payments = response.json()
-        
-        if not isinstance(payments, list) or len(payments) == 0:
-            return jsonify({
-                "error": "No payment found"
-            }), 400
-
-        # Check for successful payment
-        successful_payment = None
-        for payment in payments:
-            if payment.get("payment_status") == "SUCCESS":
-                successful_payment = payment
-                break
-
-        if successful_payment is None:
-            return jsonify({
-                "error": "Payment not successful",
-                "payments": payments
-            }), 400
-
-        # Create enrollment
-        enrollment = Enrollment(
-            student_id=current_user.id,
-            course_id=course_id,
-            payment_id=str(successful_payment.get("cf_payment_id", order_id)),
-            payment_status="paid",
-            enrollment_status="active"
-        )
-
-        db.session.add(enrollment)
-        db.session.commit()
-
-        # Send confirmation email
-        try:
-            student_name = " ".join(
-                filter(None, [current_user.first_name, current_user.last_name])
-            ) or "Student"
-
-            send_course_enrollment_email(
-                to_email=current_user.email,
-                student_name=student_name,
-                course_title=course.title,
-                enrollment_date=to_ist(enrollment.enrollment_date)
-            )
-        except Exception as mail_error:
-            current_app.logger.warning(f"Enrollment email failed: {mail_error}")
-
-        return jsonify({
-            "success": True,
-            "message": "Enrollment successful"
-        }), 200
-
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.exception(e)
-        return jsonify({
-            "error": str(e)
-        }), 500
     
     
 # api to check user enrollment status for a course

@@ -34,10 +34,14 @@ class LocalDevelopmentConfig(Config):
     # In config.py
     CASHFREE_APP_ID = os.getenv("CASHFREE_APP_ID")
     CASHFREE_SECRET_KEY = os.getenv("CASHFREE_SECRET_KEY")
-    CASHFREE_API_URL = os.getenv("CASHFREE_API_URL", "https://api.cashfree.com/pg")
+    CASHFREE_ENVIRONMENT = os.getenv("CASHFREE_ENVIRONMENT", "production").lower()
+    CASHFREE_API_URL = os.getenv(
+        "CASHFREE_API_URL",
+        "https://sandbox.cashfree.com/pg" if CASHFREE_ENVIRONMENT == "sandbox" else "https://api.cashfree.com/pg",
+    )
 
     # Initialize Cashfree
     from cashfree_pg.api_client import Cashfree
     Cashfree.XClientId = CASHFREE_APP_ID
     Cashfree.XClientSecret = CASHFREE_SECRET_KEY
-    Cashfree.XEnvironment = Cashfree.PRODUCTION  # Use Cashfree.SANDBOX for testing
+    Cashfree.XEnvironment = Cashfree.SANDBOX if CASHFREE_ENVIRONMENT == "sandbox" else Cashfree.PRODUCTION
