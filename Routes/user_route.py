@@ -687,7 +687,8 @@ def create_payment(current_user):
             "order_meta": {
                 "return_url": f"{request.host_url}api/payment-callback?order_id={{order_id}}"
             },
-            "order_expiry_time": (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
+            # Cashfree requires an expiry strictly greater than 15 minutes.
+            "order_expiry_time": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
         }
         response = requests.post(url, json=payload, headers=_cashfree_headers(), timeout=15)
         response_data = response.json() if response.content else {}
