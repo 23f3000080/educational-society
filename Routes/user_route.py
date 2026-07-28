@@ -734,8 +734,11 @@ def payment_callback():
     """Cashfree return URL; the authenticated frontend verifies the order server-side."""
     order_id = request.args.get("order_id")
     _, course_id = _order_owner_and_course(order_id)
+    payment_status = request.args.get("order_status") or request.args.get("payment_status") or ""
     frontend_url = os.getenv("FRONTEND_URL", "https://educational-society.vercel.app/").rstrip("/")
-    return redirect(f"{frontend_url}/payment-status?order_id={order_id or ''}&course_id={course_id or ''}")
+    return redirect(
+        f"{frontend_url}/payment-status?order_id={order_id or ''}&course_id={course_id or ''}&status={payment_status}"
+    )
 
     """Legacy callback implementation retained below temporarily."""
     order_id = request.args.get("order_id")
@@ -839,7 +842,7 @@ def verify_payment(current_user):
         return jsonify({"success": False, "error": "Unable to verify payment with Cashfree"}), 502
 
     if enrollment:
-        return jsonify({"success": True, "status": "PAID", "course_id": enrollment.course_id})
+        return jsonify({"success": True, "status": "PAID", "course_id": enrollment.course_id, "course_title": enrollment.course.title}), 200
     if status_code == 200:
         return jsonify({"success": False, "status": result})
     return jsonify({"success": False, "error": result}), status_code
