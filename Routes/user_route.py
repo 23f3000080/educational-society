@@ -674,6 +674,13 @@ def create_payment(current_user):
     try:
         url = f"{CASHFREE_API_URL}/orders"
         
+        # Calculate expiry time (30 minutes from now)
+        expiry_datetime = datetime.now(timezone.utc) + timedelta(minutes=30)
+        
+        # Format as ISO 8601 with timezone offset
+        # Examples: "2024-01-01T12:30:00+05:30" or "2024-01-01T12:30:00Z"
+        formatted_expiry = expiry_datetime.isoformat(timespec='seconds')
+        
         payload = {
             "order_id": order_id,
             "order_amount": amount,
@@ -682,17 +689,31 @@ def create_payment(current_user):
                 "customer_id": str(current_user.id),
                 "customer_email": email or current_user.email,
                 "customer_phone": customer_phone,
-                "customer_name": fullName or None,
+                "customer_name": fullName or f"{current_user.first_name} {current_user.last_name}".strip() or "Student",
             },
             "order_meta": {
-                "return_url": f"{request.host_url}api/payment-callback?order_id={{order_id}}"
+                "return_url": f"{request.host_url}api/payment-callback"
             },
-            # Cashfree requires an expiry strictly greater than 15 minutes.
-            "order_expiry_time": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+            "order_expiry_time": formatted_expiry
         }
-        response = requests.post(url, json=payload, headers=_cashfree_headers(), timeout=15)
+        
+        headers = {
+            "x-api-version": "2022-09-01",
+            "x-client-id": CASHFREE_APP_ID,
+            "x-client-secret": CASHFREE_SECRET_KEY,
+            "Content-Type": "application/json"
+        }
+        
+        print(f"Order Expiry Time: {formatted_expiry}")
+        print(f"Current Time: {datetime.now(timezone.utc).isoformat()}")
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
         response_data = response.json() if response.content else {}
-        if response.ok and response_data.get("payment_session_id"):
+        
+        print(f"Cashfree Response: {response.status_code}")
+        print(f"Response Data: {response_data}")
+        
+        if response.status_code == 200 and response_data.get("payment_session_id"):
             return jsonify({
                 "payment_session_id": response_data["payment_session_id"],
                 "order_id": response_data["order_id"],
@@ -701,11 +722,11 @@ def create_payment(current_user):
             })
         else:
             error_msg = response_data.get('message', 'Unknown error')
-            current_app.logger.warning("Cashfree order creation failed: %s", response.text)
+            current_app.logger.error(f"Cashfree error: {response.text}")
             return jsonify({"error": f"Payment creation failed: {error_msg}"}), 502
             
-    except requests.RequestException:
-        current_app.logger.exception("Cashfree order creation failed")
+    except requests.RequestException as e:
+        current_app.logger.exception(f"Cashfree request failed: {str(e)}")
         return jsonify({"error": "Could not reach the payment gateway. Please try again."}), 502
     
 @user_bp.route("/api/payment-callback", methods=["GET"])
