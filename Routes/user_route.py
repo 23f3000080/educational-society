@@ -708,7 +708,7 @@ def payment_callback():
     
     # Redirect to frontend with payment status
     frontend_url = os.getenv("FRONTEND_URL", "https://educational-society.vercel.app/")
-    return redirect(f"{frontend_url}/payment-status?order_id={order_id}&status={payment_status}&course_id={course_id}")
+    return redirect(f"{frontend_url}payment-status?order_id={order_id}&status={payment_status}&course_id={course_id}")
     
     
 # api to check user enrollment status for a course
