@@ -642,10 +642,14 @@ def verify_payment(current_user):
     data = request.json
     
     order_id = data.get("order_id")
-    payment_session_id = data.get("payment_session_id")
     course_id = data.get("course_id")
 
+    if not order_id or not course_id:
+        return jsonify({"error": "Missing order_id or course_id"}), 400
+
     course = Course.query.get(course_id)
+    if not course:
+        return jsonify({"error": "Course not found"}), 404
 
     try:
         # Fetch payment status from Cashfree
@@ -660,15 +664,30 @@ def verify_payment(current_user):
         response = requests.get(url, headers=headers)
         response_data = response.json()
         
+        print("Cashfree Verification Response:", response_data)  # Debug log
+        
         if response.status_code == 200 and response_data.get("payments"):
             payment = response_data["payments"][0]
             
             if payment["payment_status"] == "SUCCESS":
+                # Check if already enrolled to avoid duplicates
+                existing_enrollment = Enrollment.query.filter_by(
+                    student_id=current_user.id,
+                    course_id=course_id
+                ).first()
+                
+                if existing_enrollment:
+                    return jsonify({
+                        "message": "Already enrolled in this course",
+                        "already_enrolled": True
+                    })
+                
                 enrollment = Enrollment(
                     student_id=current_user.id,
                     course_id=course_id,
-                    payment_id=payment["cf_payment_id"],
-                    payment_status="paid"
+                    payment_id=payment.get("cf_payment_id") or order_id,
+                    payment_status="paid",
+                    enrollment_status="active"
                 )
                 
                 db.session.add(enrollment)
@@ -688,7 +707,8 @@ def verify_payment(current_user):
                     current_app.logger.warning(f"Enrollment email failed for user_id={current_user.id}: {err}")
                 
                 return jsonify({
-                    "message": "Payment verified. Course enrolled successfully."
+                    "message": "Payment verified. Course enrolled successfully.",
+                    "success": True
                 })
             else:
                 return jsonify({"error": f"Payment failed with status: {payment['payment_status']}"}), 400
@@ -696,6 +716,7 @@ def verify_payment(current_user):
             return jsonify({"error": "Payment not found or verification failed"}), 400
             
     except Exception as e:
+        print("Verification Error:", str(e))  # Debug log
         return jsonify({"error": f"Payment verification failed: {str(e)}"}), 400
 
 
@@ -704,7 +725,14 @@ def payment_callback():
     """Cashfree payment callback handler"""
     order_id = request.args.get("order_id")
     payment_status = request.args.get("payment_status")
-    course_id = request.args.get("course_id")
+    
+    # Get course_id from the order_id (since we encoded it)
+    # order_id format: order_{user_id}_{course_id}_{timestamp}
+    try:
+        parts = order_id.split('_')
+        course_id = parts[2] if len(parts) > 2 else None
+    except:
+        course_id = None
     
     # Redirect to frontend with payment status
     frontend_url = os.getenv("FRONTEND_URL", "https://educational-society.vercel.app/")
