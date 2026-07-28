@@ -1,4 +1,6 @@
 import os
+# from backend.Routes.user_route import CASHFREE_SECRET_KEY
+from cashfree_pg.api_client import Cashfree
 
 class Config():
     DEBUG = False
@@ -28,3 +30,14 @@ class LocalDevelopmentConfig(Config):
 
     RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
     RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
+    
+    # In config.py
+    CASHFREE_APP_ID = os.getenv("CASHFREE_APP_ID")
+    CASHFREE_SECRET_KEY = os.getenv("CASHFREE_SECRET_KEY")
+    CASHFREE_API_URL = os.getenv("CASHFREE_API_URL", "https://api.cashfree.com/pg")
+
+    # Initialize Cashfree
+    from cashfree_pg.api_client import Cashfree
+    Cashfree.XClientId = CASHFREE_APP_ID
+    Cashfree.XClientSecret = CASHFREE_SECRET_KEY
+    Cashfree.XEnvironment = Cashfree.PRODUCTION  # Use Cashfree.SANDBOX for testing

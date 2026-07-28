@@ -2,7 +2,7 @@ from sqlalchemy import func
 
 from models import *
 from datetime import datetime, timezone, timedelta
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, redirect, request, jsonify, current_app
 from Routes.base_route import token_required, roles_required
 from sqlalchemy.orm import aliased
 from zoneinfo import ZoneInfo
@@ -12,6 +12,12 @@ import os
 from flask_security.utils import hash_password, verify_password
 from communication.email_sender import send_course_enrollment_email
 
+import requests
+from cashfree_pg.api_client import Cashfree
+from cashfree_pg.models.create_order_request import CreateOrderRequest
+from cashfree_pg.models.customer_details import CustomerDetails
+from cashfree_pg.models.order_meta import OrderMeta
+
 load_dotenv()
 
 user_bp = Blueprint("user", __name__)
@@ -20,6 +26,12 @@ RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
 
 razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+
+CASHFREE_APP_ID = os.getenv("CASHFREE_APP_ID")
+CASHFREE_SECRET_KEY = os.getenv("CASHFREE_SECRET_KEY")
+CASHFREE_API_URL = os.getenv("CASHFREE_API_URL", "https://api.cashfree.com/pg")
+
+
 IST = ZoneInfo("Asia/Kolkata")
 
 
@@ -462,11 +474,103 @@ def fetch_course_details(current_user, course_id):
         "message": "Course details fetched successfully"
     }), 200
 
+# @user_bp.route("/api/create-payment", methods=["POST"])
+# @token_required
+# @roles_required("user")
+# def create_payment(current_user):
+
+#     data = request.json
+#     course_id = data.get("course_id")
+
+#     course = Course.query.get(course_id)
+
+#     if not course:
+#         return jsonify({"error": "Course not found"}), 404
+    
+#     existing = Enrollment.query.filter_by(student_id=current_user.id,
+#                 course_id=course_id
+#             ).first()
+
+#     if existing:
+#         return jsonify({"error": "You are already enrolled in this course"}), 400
+
+#     amount = int(course.fee * 100)  # Razorpay uses paise
+
+#     order = razorpay_client.order.create({
+#         "amount": amount,
+#         "currency": "INR",
+#         "payment_capture": 1
+#     })
+
+#     return jsonify({
+#         "order_id": order["id"],
+#         "amount": amount,
+#         "key": RAZORPAY_KEY_ID,
+#         "course_id": course.id
+#     })
+
+# @user_bp.route("/api/verify-payment", methods=["POST"])
+# @token_required
+# @roles_required("user")
+# def verify_payment(current_user):
+
+#     data = request.json
+
+#     payment_id = data.get("razorpay_payment_id")
+#     order_id = data.get("razorpay_order_id")
+#     signature = data.get("razorpay_signature")
+#     course_id = data.get("course_id")
+
+#     course = Course.query.get(course_id)
+
+#     try:
+
+#         razorpay_client.utility.verify_payment_signature({
+#             "razorpay_payment_id": payment_id,
+#             "razorpay_order_id": order_id,
+#             "razorpay_signature": signature
+#         })
+
+#         enrollment = Enrollment(
+#             student_id=current_user.id,
+#             course_id=course_id,
+#             payment_id=payment_id,
+#             payment_status="paid"
+#         )
+
+#         db.session.add(enrollment)
+#         db.session.commit()
+
+#         try:
+#             student_name = " ".join(
+#                 [part for part in [current_user.first_name, current_user.last_name] if part]
+#             ).strip() or "Student"
+#             enrollment_date = enrollment.enrollment_date.isoformat() if enrollment.enrollment_date else None
+#             send_course_enrollment_email(
+#                 to_email=current_user.email,
+#                 student_name=student_name,
+#                 course_title=course.title,
+#                 # send enrollment date in IST format
+
+#                 enrollment_date=to_ist(enrollment.enrollment_date) if enrollment.enrollment_date else None,
+#             )
+#         except Exception as err:
+#             current_app.logger.warning(f"Enrollment email failed for user_id={current_user.id}: {err}")
+
+#         return jsonify({
+#             "message": "Payment verified. Course enrolled successfully."
+#         })
+
+#     except:
+
+#         return jsonify({"error": "Payment verification failed"}), 400
+
+
+
 @user_bp.route("/api/create-payment", methods=["POST"])
 @token_required
 @roles_required("user")
 def create_payment(current_user):
-
     data = request.json
     course_id = data.get("course_id")
 
@@ -475,84 +579,138 @@ def create_payment(current_user):
     if not course:
         return jsonify({"error": "Course not found"}), 404
     
-    existing = Enrollment.query.filter_by(student_id=current_user.id,
-                course_id=course_id
-            ).first()
+    existing = Enrollment.query.filter_by(
+        student_id=current_user.id,
+        course_id=course_id
+    ).first()
 
     if existing:
         return jsonify({"error": "You are already enrolled in this course"}), 400
 
-    amount = int(course.fee * 100)  # Razorpay uses paise
+    # Generate unique order ID
+    order_id = f"order_{current_user.id}_{course_id}_{int(datetime.now().timestamp())}"
+    amount = float(course.fee)
+    
+    # Create Cashfree order
+    try:
+        # Cashfree API endpoint
+        url = f"{CASHFREE_API_URL}/orders"
+        
+        payload = {
+            "order_id": order_id,
+            "order_amount": amount,
+            "order_currency": "INR",
+            "customer_details": {
+                "customer_id": str(current_user.id),
+                "customer_email": current_user.email,
+                "customer_phone": current_user.mobile_no or "9999999999"
+            },
+            "order_meta": {
+                "return_url": f"{request.host_url}api/payment-callback?course_id={course.id}"
+            }
+        }
+        
+        headers = {
+            "x-api-version": "2022-09-01",
+            "x-client-id": CASHFREE_APP_ID,
+            "x-client-secret": CASHFREE_SECRET_KEY,
+            "Content-Type": "application/json"
+        }
+        
+        response = requests.post(url, json=payload, headers=headers)
+        response_data = response.json()
+        
+        if response.status_code == 200:
+            return jsonify({
+                "payment_session_id": response_data["payment_session_id"],
+                "order_id": response_data["order_id"],
+                "amount": int(amount * 100),
+                "key": CASHFREE_APP_ID,
+                "course_id": course.id
+            })
+        else:
+            return jsonify({"error": f"Payment creation failed: {response_data.get('message', 'Unknown error')}"}), 500
+            
+    except Exception as e:
+        return jsonify({"error": f"Payment creation failed: {str(e)}"}), 500
 
-    order = razorpay_client.order.create({
-        "amount": amount,
-        "currency": "INR",
-        "payment_capture": 1
-    })
-
-    return jsonify({
-        "order_id": order["id"],
-        "amount": amount,
-        "key": RAZORPAY_KEY_ID,
-        "course_id": course.id
-    })
 
 @user_bp.route("/api/verify-payment", methods=["POST"])
 @token_required
 @roles_required("user")
 def verify_payment(current_user):
-
     data = request.json
-
-    payment_id = data.get("razorpay_payment_id")
-    order_id = data.get("razorpay_order_id")
-    signature = data.get("razorpay_signature")
+    
+    order_id = data.get("order_id")
+    payment_session_id = data.get("payment_session_id")
     course_id = data.get("course_id")
 
     course = Course.query.get(course_id)
 
     try:
+        # Fetch payment status from Cashfree
+        url = f"{CASHFREE_API_URL}/orders/{order_id}/payments"
+        
+        headers = {
+            "x-api-version": "2022-09-01",
+            "x-client-id": CASHFREE_APP_ID,
+            "x-client-secret": CASHFREE_SECRET_KEY
+        }
+        
+        response = requests.get(url, headers=headers)
+        response_data = response.json()
+        
+        if response.status_code == 200 and response_data.get("payments"):
+            payment = response_data["payments"][0]
+            
+            if payment["payment_status"] == "SUCCESS":
+                enrollment = Enrollment(
+                    student_id=current_user.id,
+                    course_id=course_id,
+                    payment_id=payment["cf_payment_id"],
+                    payment_status="paid"
+                )
+                
+                db.session.add(enrollment)
+                db.session.commit()
+                
+                try:
+                    student_name = " ".join(
+                        [part for part in [current_user.first_name, current_user.last_name] if part]
+                    ).strip() or "Student"
+                    send_course_enrollment_email(
+                        to_email=current_user.email,
+                        student_name=student_name,
+                        course_title=course.title,
+                        enrollment_date=to_ist(enrollment.enrollment_date) if enrollment.enrollment_date else None,
+                    )
+                except Exception as err:
+                    current_app.logger.warning(f"Enrollment email failed for user_id={current_user.id}: {err}")
+                
+                return jsonify({
+                    "message": "Payment verified. Course enrolled successfully."
+                })
+            else:
+                return jsonify({"error": f"Payment failed with status: {payment['payment_status']}"}), 400
+        else:
+            return jsonify({"error": "Payment not found or verification failed"}), 400
+            
+    except Exception as e:
+        return jsonify({"error": f"Payment verification failed: {str(e)}"}), 400
 
-        razorpay_client.utility.verify_payment_signature({
-            "razorpay_payment_id": payment_id,
-            "razorpay_order_id": order_id,
-            "razorpay_signature": signature
-        })
 
-        enrollment = Enrollment(
-            student_id=current_user.id,
-            course_id=course_id,
-            payment_id=payment_id,
-            payment_status="paid"
-        )
-
-        db.session.add(enrollment)
-        db.session.commit()
-
-        try:
-            student_name = " ".join(
-                [part for part in [current_user.first_name, current_user.last_name] if part]
-            ).strip() or "Student"
-            enrollment_date = enrollment.enrollment_date.isoformat() if enrollment.enrollment_date else None
-            send_course_enrollment_email(
-                to_email=current_user.email,
-                student_name=student_name,
-                course_title=course.title,
-                # send enrollment date in IST format
-
-                enrollment_date=to_ist(enrollment.enrollment_date) if enrollment.enrollment_date else None,
-            )
-        except Exception as err:
-            current_app.logger.warning(f"Enrollment email failed for user_id={current_user.id}: {err}")
-
-        return jsonify({
-            "message": "Payment verified. Course enrolled successfully."
-        })
-
-    except:
-
-        return jsonify({"error": "Payment verification failed"}), 400
-
+@user_bp.route("/api/payment-callback", methods=["GET"])
+def payment_callback():
+    """Cashfree payment callback handler"""
+    order_id = request.args.get("order_id")
+    payment_status = request.args.get("payment_status")
+    course_id = request.args.get("course_id")
+    
+    # Redirect to frontend with payment status
+    frontend_url = os.getenv("FRONTEND_URL", "https://educational-society.vercel.app/")
+    return redirect(f"{frontend_url}/payment-status?order_id={order_id}&status={payment_status}&course_id={course_id}")
+    
+    
 # api to check user enrollment status for a course
 @user_bp.route("/api/enrollment-status/<int:course_id>", methods=["GET"])
 @token_required
