@@ -123,19 +123,16 @@ Educational Society Team
 
 def send_test_result_email(to_email, student_name, course_title, test_title, score=None, max_score=None):
     subject = f"Test Result Update - {test_title}"
-    result_line = ""
-    if score is not None and max_score is not None:
-        result_line = f"Score: {score}/{max_score}"
 
     body = f"""
 Hello {student_name or 'Student'},
 
-Your test result is available.
+Your test answers have been submitted successfully.
 Course: {course_title or 'N/A'}
 Test: {test_title}
-{result_line}
-
-Please login to your dashboard to view detailed result analysis.
+"""
+    body += """
+Please login to your dashboard to view detailed result analysis after the results are available.
 
 Regards,
 Educational Society Team
