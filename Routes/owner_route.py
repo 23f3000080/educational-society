@@ -17,7 +17,7 @@ from reportlab.lib.fonts import addMapping
 from models import *
 from flask import Blueprint, request, jsonify, current_app
 from Routes.base_route import token_required, roles_required
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Thread
 from communication.email_sender import send_query_resolution_email, send_notification_email, send_plain_email
 
@@ -1670,3 +1670,105 @@ def verify_certificate(token):
         "instructor_name": certificate.instructor_name,
         "status": certificate.status or "Verified"
     })
+
+def format_duration(seconds):
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    seconds = seconds % 60
+
+    return f"{hours}h {minutes}m {seconds}s"
+    
+def student_activity(student_id):
+    """Get student activity data for dashboard."""
+    user = User.query.get(student_id)
+    if not user:
+        return {"error": "User not found"}, 404
+
+    activity = StudentActivity.query.filter_by(
+        student_id=student_id
+    ).first()
+
+    if not activity:
+        return {
+            "error": "No activity data found for this student"
+        }, 404
+    # Current UTC time
+    now = datetime.now(timezone.utc)
+    # determine online status based on last_seen_at
+    is_online = False
+
+    if activity.last_seen_at:
+        last_seen = activity.last_seen_at
+
+        # Make sure datetime is timezone-aware
+        if last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=timezone.utc)
+
+        is_online = (
+            now - last_seen
+        ) <= timedelta(minutes=2)  # Consider online if last seen within 2 minutes
+
+    # -----------------------------
+    # Session duration
+    # -----------------------------
+
+    session_duration_seconds = 0
+
+    if activity.session_duration:
+        session_duration_seconds = int(
+            activity.session_duration.total_seconds()
+        )
+
+    # -----------------------------
+    # Return response
+    # -----------------------------
+
+    return {
+        "user_id": user.id,
+        "user_name": f"{user.first_name} {user.last_name}".strip(),
+        "email": user.email,
+
+        "last_login": (
+            activity.last_login.isoformat()
+            if activity.last_login
+            else None
+        ),
+
+        "last_logout": (
+            activity.last_logout.isoformat()
+            if activity.last_logout
+            else None
+        ),
+
+        "login_count": activity.login_count or 0,
+
+        "last_seen_at": (
+            activity.last_seen_at.isoformat()
+            if activity.last_seen_at
+            else None
+        ),
+
+        "ip_address": activity.ip_address or "Unknown",
+
+        "user_agent": activity.user_agent or "Unknown",
+
+        # Return formatted duration instead of raw seconds
+        "session_duration": format_duration(session_duration_seconds),
+
+        "is_online": is_online
+    }, 200
+
+# api for all students activity
+@owner_bp.route("/api/students/activity", methods=["GET"])
+@token_required
+@roles_required("admin")
+def admin_get_all_students_activity(current_user):
+    students = User.query.filter(User.active.is_(True)).all()
+    activity_data = []
+
+    for student in students:
+        data, status_code = student_activity(student.id)
+        if status_code == 200:
+            activity_data.append(data)
+
+    return jsonify(activity_data), 200

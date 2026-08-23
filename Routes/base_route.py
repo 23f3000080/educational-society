@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify
+from flask_login import current_user, login_required
 from models import *
 from flask_security.utils import hash_password, verify_password
 import uuid, random, string
@@ -334,6 +335,38 @@ def login_user():
     }
 
     token = generate_jwt(user, remember_me)
+    
+    now = datetime.now(pytz.utc)
+    activity = StudentActivity.query.filter_by(student_id=user.id).first()
+    
+    if not activity or activity is None:
+        # First login
+        activity = StudentActivity(
+            student_id=user.id,
+            last_login=now,
+            last_seen_at=now,
+            login_count=1,
+            ip_address=request.headers.get(
+                'X-Forwarded-For',
+                request.remote_addr
+            ),
+            user_agent=request.headers.get('User-Agent')
+        )
+
+        db.session.add(activity)
+    
+    else:
+        # Existing student
+        activity.last_login = now
+        activity.last_seen_at = now
+        activity.login_count = (activity.login_count or 0) + 1
+        activity.ip_address = request.headers.get(
+            'X-Forwarded-For',
+            request.remote_addr
+        )
+        activity.user_agent = request.headers.get('User-Agent')
+
+    db.session.commit()
 
     return jsonify({
         "success": True,
@@ -342,6 +375,24 @@ def login_user():
         "token": token
     }), 200
 
+# heartbeat API
+@base_bp.route('/api/heartbeat', methods=['GET'])
+@token_required
+def heartbeat(current_user):
+    activity = StudentActivity.query.filter_by(student_id=current_user.id).first()
+    
+    if not activity:
+        return jsonify({"error": "Activity record not found"}), 404
+    
+    now = datetime.now(pytz.utc)
+    activity.last_seen_at = now
+    
+    db.session.commit()
+    
+    return jsonify({
+        "message": "Heartbeat received",
+        "last_seen_at": to_ist_iso(activity.last_seen_at)
+    }), 200
 
 # API for Google Login
 @base_bp.route('/api/auth/google-login', methods=['POST'])
@@ -395,6 +446,38 @@ def google_login():
         }
         
         token = generate_jwt(user, remember_me=True)
+        
+        # same as login_user activity update
+        now = datetime.now(pytz.utc)
+        activity = StudentActivity.query.filter_by(student_id=user.id).first()
+        
+        if not activity or activity is None:
+            # First login
+            activity = StudentActivity(
+                student_id=user.id,
+                last_login=now,
+                last_seen_at=now,
+                login_count=1,
+                ip_address=request.headers.get(
+                    'X-Forwarded-For',
+                    request.remote_addr
+                ),
+                user_agent=request.headers.get('User-Agent')
+            )
+
+            db.session.add(activity)
+        else:
+            # Existing student
+            activity.last_login = now
+            activity.last_seen_at = now
+            activity.login_count = (activity.login_count or 0) + 1
+            activity.ip_address = request.headers.get(
+                'X-Forwarded-For',
+                request.remote_addr
+            )
+            activity.user_agent = request.headers.get('User-Agent')
+        
+        db.session.commit()
         
         return jsonify({
             "success": True,
@@ -490,6 +573,50 @@ def google_signup():
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": f"Signup failed: {str(e)}"}), 500
+    
+# API for logout
+@base_bp.route('/api/auth/logout', methods=['POST'])
+@token_required
+def logout_user(current_user):
+
+    activity = StudentActivity.query.filter_by(
+        student_id=current_user.id
+    ).first()
+
+    if not activity:
+        return jsonify({
+            "success": False,
+            "message": "Activity record not found"
+        }), 404
+
+    now = datetime.now(pytz.utc)
+
+    activity.last_seen_at = now
+    activity.last_logout = now
+
+    # Calculate session duration
+    duration_seconds = 0
+
+    if activity.last_login:
+        duration = now - activity.last_login
+        activity.session_duration = duration
+        duration_seconds = int(duration.total_seconds())
+
+    db.session.commit()    
+
+    return jsonify({
+        "success": True,
+        "message": "Logout successful",
+        "activity": {
+            "last_seen_at": activity.last_seen_at.isoformat()
+                if activity.last_seen_at else None,
+
+            "last_logout": activity.last_logout.isoformat()
+                if activity.last_logout else None,
+
+            "session_duration_seconds": duration_seconds
+        }
+    }), 200
 
 
 @base_bp.route('/api/auth/google-set-password', methods=['POST'])

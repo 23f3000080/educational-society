@@ -729,3 +729,30 @@ class Certificate(db.Model):
 
     student = db.relationship("User", backref=db.backref("certificates", lazy=True, cascade="all, delete-orphan"))
     course = db.relationship("Course", backref=db.backref("certificates", lazy=True, cascade="all, delete-orphan"))
+    
+    
+class StudentActivity(db.Model):
+    __tablename__ = "student_activities"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    student_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    last_login = db.Column(db.DateTime(timezone=True))
+    last_logout = db.Column(db.DateTime(timezone=True))
+    login_count = db.Column(db.Integer, default=0)
+    last_seen_at = db.Column(db.DateTime(timezone=True)) ## if not logged out properly, this will be used to track the last activity time
+    ip_address = db.Column(db.String(45), nullable=True)
+    user_agent = db.Column(db.String(255), nullable=True)
+    session_duration = db.Column(db.Interval, nullable=True)  # Duration of the session
+
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+    student = db.relationship("User", backref=db.backref("activities", lazy=True, cascade="all, delete-orphan"))

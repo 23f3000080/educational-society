@@ -1,5 +1,6 @@
 from sqlalchemy import func
 import re
+from Routes.owner_route import format_duration
 from models import *
 from datetime import datetime, timezone, timedelta
 from flask import Blueprint, redirect, request, jsonify, current_app
@@ -1720,4 +1721,38 @@ def check_user_enrollment(current_user, course_id):
         return jsonify({
             "enrolled": False
         }), 200
-    
+
+# api to fetch user activity data for dashboard
+@user_bp.route("/api/my-activity", methods=["GET"])
+@token_required
+@roles_required("user")
+def fetch_my_activity(current_user):
+    activity = StudentActivity.query.filter_by(student_id=current_user.id).first()
+    if not activity:
+        return jsonify({
+            "error": "No activity data found for user"
+        }), 404
+
+    # Current UTC time
+    now = datetime.now(timezone.utc)
+    is_online = False
+
+    if activity.last_seen_at:
+        last_seen = activity.last_seen_at
+        is_online = (now - last_seen) <= timedelta(minutes=2)  # Consider online if last seen within 2 minutes
+
+    # Calculate session duration in seconds
+    session_duration_seconds = 0
+    # last_login-last_seen duration
+    if activity.last_login and activity.last_seen_at:
+        session_duration_seconds = int((activity.last_seen_at - activity.last_login).total_seconds())
+        if session_duration_seconds < 0:
+            session_duration_seconds = 0
+
+    return jsonify({
+        "last_seen_at": activity.last_seen_at.isoformat() if activity.last_seen_at else None,
+        "user_ip": activity.ip_address or "Unknown",
+        "session_duration": format_duration(session_duration_seconds),
+        "is_online": is_online,
+        "last_login_at": activity.last_login.isoformat() if activity.last_login else None
+    }), 200
