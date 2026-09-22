@@ -248,10 +248,16 @@ class Enrollment(db.Model):
     student_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"))
 
     course_id = db.Column(db.Integer, db.ForeignKey("courses.id", ondelete="CASCADE"))
+    
+    course_term = db.Column(db.String(50), nullable=True)  # e.g., "Fall 2024", "Spring 2025"
+    term_start_date = db.Column(db.Date, nullable=True)
+    term_end_date = db.Column(db.Date, nullable=True)
 
     payment_id = db.Column(db.String(120))
 
     payment_status = db.Column(db.String(20), default="pending")
+    amount_paid = db.Column(db.Numeric(10, 2), default=0.00)
+    refund_status = db.Column(db.String(20), default="not_requested")
 
     enrollment_status = db.Column(db.String(20), default="active")
 

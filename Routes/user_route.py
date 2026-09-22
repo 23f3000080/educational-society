@@ -796,7 +796,11 @@ def payment_callback():
                         course_id=course.id,
                         payment_id=order_id,
                         payment_status="paid",
-                        enrollment_status="active"
+                        enrollment_status="active",
+                        term_start_date=course.start_date,
+                        term_end_date=course.end_date,
+                        amount_paid=course.fee
+                        
                     )
                     db.session.add(enrollment)
                     db.session.commit()
@@ -814,6 +818,7 @@ def payment_callback():
                             student_name=student_name,
                             course_title=course.title,
                             enrollment_date=to_ist(enrollment.enrollment_date) if enrollment.enrollment_date else None,
+                            
                         )
                         print(f"Enrollment email sent to {user.email}")
                     except Exception as mail_error:
@@ -1661,11 +1666,15 @@ def fetch_my_courses_details(current_user):
             "duration_months": course.duration_months,
             "class_level": course.class_level,
             "course_code": course.course_code,
-            "fee": float(course.fee),
+            "fee": float(enrollment.amount_paid) if enrollment and enrollment.amount_paid else 0,
+            "course_term": enrollment.course_term if enrollment and enrollment.course_term else None,
+            "payment_status": enrollment.payment_status if enrollment else None,
+            "refund_status": enrollment.refund_status if enrollment else None,
             "description": course.description,
-            "start_date": course.start_date.isoformat() if course.start_date else None,
-            "end_date": course.end_date.isoformat() if course.end_date else None,
+            "start_date": enrollment.term_start_date if enrollment and enrollment.term_start_date else None,
+            "end_date": enrollment.term_end_date if enrollment and enrollment.term_end_date else None,
             "enrollment_date": enrollment.enrollment_date.isoformat() if enrollment and enrollment.enrollment_date else None,
+            "enrollment_status": enrollment.enrollment_status if enrollment else None,
             "is_active": course.is_active,
             "picture_url": course.picture if course.picture else None
         })
