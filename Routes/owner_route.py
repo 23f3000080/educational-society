@@ -1328,6 +1328,7 @@ def download_certificate_pdf(current_user, certificate_id):
     
     user = User.query.get(certificate.student_id)
     course = Course.query.get(certificate.course_id)
+    enrollment = Enrollment.query.filter_by(student_id=user.id, course_id=course.id).first() if user and course else None
     
     # Generate verification URL
     host_url = frontend_host_url
@@ -1537,10 +1538,11 @@ def download_certificate_pdf(current_user, certificate_id):
     details = []
     if certificate.duration_months:
         details.append(('Duration', f"{certificate.duration_months} Months"))
-    if course and course.start_date:
-        details.append(('Start Date', course.start_date.strftime('%b %d, %Y')))
-    if course and course.end_date:
-        details.append(('End Date', course.end_date.strftime('%b %d, %Y')))
+        # enrollment term_start_date
+    if enrollment and enrollment.term_start_date:
+        details.append(('Start Date', enrollment.term_start_date.strftime('%b %d, %Y')))
+    if enrollment and enrollment.term_end_date:
+        details.append(('End Date', enrollment.term_end_date.strftime('%b %d, %Y')))
     if certificate.completion_date:
         details.append(('Completion Date', certificate.completion_date.strftime('%b %d, %Y')))
     if certificate.grade:
@@ -1657,14 +1659,15 @@ def verify_certificate(token):
     
     course = Course.query.get(certificate.course_id)
     user = User.query.get(certificate.student_id)
+    enrollment = Enrollment.query.filter_by(student_id=user.id, course_id=course.id).first() if user and course else None
     
     return jsonify({
         "certificate_number": certificate.certificate_number,
         "user_name": f"{user.first_name} {user.last_name}",
         "course_title": course.title,
         "duration_months": certificate.duration_months,
-        "start_date": course.start_date.strftime('%Y-%m-%d') if course and course.start_date else None,
-        "end_date": course.end_date.strftime('%Y-%m-%d') if course and course.end_date else None,
+        "start_date": enrollment.term_start_date.strftime('%Y-%m-%d') if enrollment and enrollment.term_start_date else None,
+        "end_date": enrollment.term_end_date.strftime('%Y-%m-%d') if enrollment and enrollment.term_end_date else None,
         "completion_date": certificate.completion_date.strftime('%Y-%m-%d') if certificate.completion_date else None,
         "grade": certificate.grade,
         "instructor_name": certificate.instructor_name,

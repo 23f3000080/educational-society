@@ -621,9 +621,15 @@ def _activate_paid_enrollment(order_id, expected_user_id=None):
         successful = next((p for p in payments_response.json() if p.get("payment_status") == "SUCCESS"), None)
         if successful:
             payment_id = str(successful.get("cf_payment_id") or order_id)
+    
+    # course term is course start month year and end month year like july 2026 - sep 2026, 
+    course_term = f"{course.start_date.strftime('%b %Y')} - {course.end_date.strftime('%b %Y')}"
 
     enrollment = Enrollment(student_id=user_id, course_id=course_id, payment_id=payment_id,
-                            payment_status="paid", enrollment_status="active")
+                            payment_status="paid", enrollment_status="active",
+                            term_start_date=course.start_date, term_end_date=course.end_date,
+                            course_term=course_term,
+                            amount_paid=course.fee)
     db.session.add(enrollment)
     db.session.commit()
     try:
