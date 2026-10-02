@@ -1723,7 +1723,7 @@ def check_user_enrollment(current_user, course_id):
     enrollment = Enrollment.query.filter_by(
         student_id=current_user.id,
         course_id=course_id,
-        enrollment_status='active'
+        # enrollment_status='active'
     ).first()
 
     if enrollment:
