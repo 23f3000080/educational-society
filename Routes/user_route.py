@@ -742,7 +742,7 @@ def payment_callback():
     order_id = request.args.get("order_id")
     _, course_id = _order_owner_and_course(order_id)
     payment_status = request.args.get("order_status") or request.args.get("payment_status") or ""
-    frontend_url = os.getenv("FRONTEND_URL", "https://educational-society.vercel.app/").rstrip("/")
+    frontend_url = os.getenv("FRONTEND_URL", "https://www.educationalsociety.in/").rstrip("/")
     return redirect(
         f"{frontend_url}/payment-status?order_id={order_id or ''}&course_id={course_id or ''}&status={payment_status}"
     )
@@ -834,7 +834,7 @@ def payment_callback():
             db.session.rollback()
     
     # Redirect to frontend with payment status
-    frontend_url = os.getenv("FRONTEND_URL", "https://educational-society.vercel.app/")
+    frontend_url = os.getenv("FRONTEND_URL", "https://www.educationalsociety.in/")
     redirect_url = f"{frontend_url}payment-status?order_id={order_id}&status={payment_status}&course_id={course_id}"
     
     print(f"Redirecting to: {redirect_url}")

@@ -31,7 +31,7 @@ from werkzeug.utils import secure_filename, send_file
 UPLOAD_FOLDER = "uploads/course_pictures"
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
-frontend_host_url = "https://educational-society.vercel.app/"  # Replace with your actual frontend host URL
+frontend_host_url = "https://www.educationalsociety.in/"  # Replace with your actual frontend host URL
 
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
